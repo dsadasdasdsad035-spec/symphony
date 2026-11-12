@@ -451,6 +451,14 @@ defmodule SymphonyElixir.Config.Schema do
             settings.tracker.terminal_states || @linear_terminal_states
           }
 
+        "shanzhi" ->
+          # 善治的状态是固定的原生枚举，直接给默认值：
+          # 激活 -> 开工，已解决 -> 停下等人工评审，已关闭 -> 收尾。
+          {
+            settings.tracker.active_states || ["active"],
+            settings.tracker.terminal_states || ["closed"]
+          }
+
         _ ->
           {settings.tracker.active_states, settings.tracker.terminal_states}
       end

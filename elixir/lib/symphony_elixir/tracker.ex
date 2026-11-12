@@ -16,7 +16,8 @@ defmodule SymphonyElixir.Tracker do
     "gitlab" => SymphonyElixir.GitLab.Adapter,
     "jira" => SymphonyElixir.Jira.Adapter,
     "linear" => SymphonyElixir.Linear.Adapter,
-    "memory" => SymphonyElixir.Tracker.Memory
+    "memory" => SymphonyElixir.Tracker.Memory,
+    "shanzhi" => SymphonyElixir.Shanzhi.Adapter
   }
 
   @callback fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}

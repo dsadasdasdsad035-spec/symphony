@@ -14,7 +14,7 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 ## How it works
 
 1. Polls the configured tracker for candidate work (included adapters: Linear, GitHub Issues, Jira
-   Cloud, Asana, and GitLab)
+   Cloud, Asana, GitLab, and 善治/SF Bug)
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
@@ -23,7 +23,8 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 During app-server sessions, the selected tracker adapter may advertise provider-native tools. The
 Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud serves
-`jira_rest`, Asana serves `asana_api`, and GitLab serves `gitlab_api`. Symphony executes those
+`jira_rest`, Asana serves `asana_api`, GitLab serves `gitlab_api`, and 善治 serves the `shanzhi_*`
+bug tools. Symphony executes those
 tools with configured host-side auth and removes declared tracker-token environment variables from
 the Codex child, so the agent does not need a second tracker login.
 
@@ -292,6 +293,49 @@ codex:
 - Symphony reads project issues by IID and exposes route-safe `GL-<iid>` identifiers.
 - `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps configured tracker
   credentials and provider authentication aliases out of the Codex child.
+
+### 善治（SF 软件工厂）adapter
+
+- Config: use `tracker.kind: shanzhi` with required `tracker.provider.username`, `password` (or
+  `SF_USERNAME` / `SF_PASSWORD`), and `product_id`; optional `project_id`, `dep_id`, `assignee`
+  (name or 11-digit mobile, filters to bugs assigned to that person), `require_confirmed`
+  (default `true`), `base_url` (default `https://api.gushen.sieiot.com`), and `web_url` for
+  dashboard links.
+
+```yaml
+tracker:
+  kind: shanzhi
+  provider:
+    base_url: https://api.gushen.sieiot.com
+    username: $SF_USERNAME
+    password: $SF_PASSWORD
+    product_id: 419          # 谷神工业数字平台
+    project_id: 428
+    dep_id: "491919451030089984"
+    assignee: 米久业          # 可选；不填则所有人的 Bug 都可派发
+    require_confirmed: true  # 默认 true：只派发「已确认」的 Bug
+    web_url: http://sf.sieiot.com
+  active_states: ["active"]
+  terminal_states: ["closed"]
+```
+
+- Dispatch requires **both** `状态=激活` and `确认=是`. 善治的「确认」是 Bug 上的独立布尔字段
+  `confirmed`，不是状态；未确认的 Bug 属于待评审的原始反馈，不派发。`require_confirmed: false`
+  可关闭该过滤。过滤发生在读取层，所以正在运行但被取消确认的 Bug 会在下一轮状态刷新时自动终止
+  （工作区保留）。
+- State mapping follows a bug's lifecycle: `active`（激活）is dispatched, `resolved`（已解决）is
+  neither active nor terminal so the agent stops while the workspace is kept for human review, and
+  `closed`（已关闭）is terminal and cleans up. `suspended` is fetched but never dispatched.
+- Symphony reads bugs from `zt-bug/find-page-list`, fills missing reproduction steps from
+  `zt-bug/get-by-id` (cached for 2 minutes so polling does not refetch every bug each cycle), and
+  exposes route-safe `SF-<id>` identifiers. Member names resolve to mobiles through
+  `base-person/find-pagination-dept-sf`, cached for 5 minutes.
+- Tools: `shanzhi_get_bug`, `shanzhi_bug_history`, `shanzhi_confirm_bug`, `shanzhi_remark_bug`,
+  and `shanzhi_resolve_bug` run host-side with the cached login token. `shanzhi_confirm_bug` exists
+  so an agent can record that it genuinely reproduced a bug; its description tells the agent to use
+  `shanzhi_remark_bug` instead when it cannot reproduce one. Creating and deleting bugs are
+  intentionally not exposed. `SF_PASSWORD` and configured password variables are stripped from the
+  agent child, and the token is cached in process memory only (no `~/.sf-mcp/auth.json` on disk).
 
 ## Web dashboard
 
