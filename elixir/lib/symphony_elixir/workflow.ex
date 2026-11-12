@@ -83,7 +83,9 @@ defmodule SymphonyElixir.Workflow do
   end
 
   defp split_front_matter(content) do
-    lines = String.split(content, ~r/\R/, trim: false)
+    # 注: 不能用 ~r/\R/。PCRE 在非 UTF 模式下把字节 0x85 当作 NEL,
+    # 会切断含 0x85 的 UTF-8 多字节字符(如"内""必""清""先""其"),导致中文内容损坏。
+    lines = String.split(content, ~r/\r\n|\n|\r/, trim: false)
 
     case lines do
       ["---" | tail] ->
