@@ -21,6 +21,7 @@ defmodule SymphonyElixir.Agent.CursorCli do
   alias SymphonyElixir.{Config, PathSafety}
 
   @default_command "cursor-agent"
+  @mcp_server_name "symphony"
   @line_bytes 1_048_576
   @plain_output_preview_bytes 400
 
@@ -45,12 +46,15 @@ defmodule SymphonyElixir.Agent.CursorCli do
           state = :ets.new(__MODULE__, [:set])
           :ets.insert(state, {:chat_id, nil})
           :ets.insert(state, {:turn_count, 0})
+          mcp_url = ensure_mcp_config(expanded_workspace)
 
           {:ok,
            %{
              workspace: expanded_workspace,
              worker_host: nil,
              command: cursor_command(),
+             mcp_url: mcp_url,
+             secret_environment_names: secret_environment_names(),
              state: state
            }}
         end
@@ -59,7 +63,14 @@ defmodule SymphonyElixir.Agent.CursorCli do
 
   @impl true
   @spec run_turn(map(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run_turn(%{workspace: workspace, command: command, state: state}, prompt, issue, opts \\ []) do
+  def run_turn(session, prompt, issue, opts \\ []) do
+    %{
+      workspace: workspace,
+      command: command,
+      state: state,
+      secret_environment_names: secret_names
+    } = session
+
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
     session_id = fetch_state(state, :chat_id)
     turn_id = bump_turn_count(state)
@@ -73,9 +84,9 @@ defmodule SymphonyElixir.Agent.CursorCli do
       last_plain: ""
     }
 
-    launch = build_launch_command(command, session_id, prompt)
+    launch = build_launch_command(command, session_id, prompt, secret_names)
 
-    case start_port(workspace, launch, context.metadata) do
+    case start_port(workspace, launch, context.metadata, secret_names) do
       {:ok, port, metadata} ->
         try do
           receive_loop(port, %{context | metadata: metadata}, "", timeout_ms())
@@ -244,7 +255,7 @@ defmodule SymphonyElixir.Agent.CursorCli do
 
   # ---------------------------------------------------------------- 进程管理
 
-  defp start_port(workspace, launch_command, metadata) do
+  defp start_port(workspace, launch_command, metadata, secret_names) do
     case System.find_executable("bash") do
       nil ->
         {:error, :bash_not_found}
@@ -259,6 +270,7 @@ defmodule SymphonyElixir.Agent.CursorCli do
               :stderr_to_stdout,
               args: [~c"-lc", String.to_charlist(launch_command)],
               cd: String.to_charlist(workspace),
+              env: secret_env(secret_names),
               line: @line_bytes
             ]
           )
@@ -267,6 +279,33 @@ defmodule SymphonyElixir.Agent.CursorCli do
     end
   rescue
     error -> {:error, {:port_open_failed, error}}
+  end
+
+  # 和 Codex 后端一致：tracker 密钥不传给 agent 子进程。
+  # 工具调用统一走 Symphony 自己的 MCP 端点，agent 不需要、也拿不到 token。
+  defp secret_env(names) do
+    names
+    |> valid_env_names()
+    |> Enum.map(fn name -> {String.to_charlist(name), false} end)
+  end
+
+  defp unset_prefix(names) do
+    case names |> valid_env_names() do
+      [] -> nil
+      valid -> "unset " <> Enum.join(valid, " ")
+    end
+  end
+
+  defp valid_env_names(names) do
+    Enum.filter(names, fn name ->
+      is_binary(name) and String.match?(name, ~r/^[A-Za-z_][A-Za-z0-9_]*$/)
+    end)
+  end
+
+  defp secret_environment_names do
+    SymphonyElixir.Tracker.bind_agent_tools().secret_environment_names
+  rescue
+    _ -> []
   end
 
   defp port_metadata(port) do
@@ -291,8 +330,17 @@ defmodule SymphonyElixir.Agent.CursorCli do
 
   # ---------------------------------------------------------------- 命令构造
 
-  defp build_launch_command(command, session_id, prompt) do
-    base = [command, "-p", "--output-format", "stream-json", "--force", "--trust"]
+  defp build_launch_command(command, session_id, prompt, secret_names) do
+    base = [
+      command,
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--force",
+      "--trust",
+      # 自动批准 .cursor/mcp.json 里注册的 Symphony MCP server，否则每轮都会卡在审批
+      "--approve-mcps"
+    ]
 
     resume =
       if is_binary(session_id) and String.trim(session_id) != "" do
@@ -301,7 +349,9 @@ defmodule SymphonyElixir.Agent.CursorCli do
         []
       end
 
-    Enum.join(base ++ resume ++ [shell_escape(prompt)], " ")
+    [unset_prefix(secret_names), Enum.join(base ++ resume ++ [shell_escape(prompt)], " ")]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" && ")
   end
 
   defp cursor_command do
@@ -317,6 +367,102 @@ defmodule SymphonyElixir.Agent.CursorCli do
     end
   rescue
     _ -> @default_command
+  end
+
+  # ---------------------------------------------------------------- MCP 接线
+
+  # 把 Symphony 的 MCP 端点（/mcp）写进工作区的 .cursor/mcp.json，
+  # 让 cursor-agent 以原生工具的方式拿到 linear_graphql 等 tracker 工具。
+  # 同时把该文件加入 .git/info/exclude，避免被 agent 的 git add -A 提交进仓库。
+  defp ensure_mcp_config(workspace) do
+    case mcp_endpoint_url() do
+      nil ->
+        Logger.warning("cursor-cli 未检测到 Symphony HTTP 端口，跳过 MCP 注册；线性工具将不可用")
+        nil
+
+      url ->
+        write_mcp_config(workspace, url)
+        exclude_from_git(workspace)
+        url
+    end
+  end
+
+  defp mcp_endpoint_url do
+    port =
+      case configured_port() do
+        configured when is_integer(configured) and configured > 0 -> configured
+        # 配成 0 表示随机端口，只能问已启动的端点要实际端口
+        0 -> SymphonyElixir.HttpServer.bound_port()
+        _ -> nil
+      end
+
+    if is_integer(port) and port > 0 do
+      "http://127.0.0.1:#{port}/mcp"
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp configured_port do
+    Config.server_port()
+  rescue
+    _ -> nil
+  end
+
+  defp write_mcp_config(workspace, url) do
+    dir = Path.join(workspace, ".cursor")
+    path = Path.join(dir, "mcp.json")
+    File.mkdir_p!(dir)
+
+    existing =
+      case File.read(path) do
+        {:ok, content} ->
+          case Jason.decode(content) do
+            {:ok, %{} = decoded} -> decoded
+            _ -> %{}
+          end
+
+        _ ->
+          %{}
+      end
+
+    servers = Map.get(existing, "mcpServers")
+    servers = if is_map(servers), do: servers, else: %{}
+
+    entry = %{"type" => "http", "url" => url}
+    updated = Map.put(existing, "mcpServers", Map.put(servers, @mcp_server_name, entry))
+
+    File.write!(path, Jason.encode!(updated, pretty: true))
+    :ok
+  rescue
+    error ->
+      Logger.warning("写入 .cursor/mcp.json 失败: #{inspect(error)}")
+      :error
+  end
+
+  defp exclude_from_git(workspace) do
+    exclude_path = Path.join([workspace, ".git", "info", "exclude"])
+
+    if File.dir?(Path.dirname(exclude_path)) do
+      append_exclude_entry(exclude_path, ".cursor/mcp.json")
+    end
+
+    :ok
+  rescue
+    error ->
+      Logger.warning("写入 .git/info/exclude 失败: #{inspect(error)}")
+      :error
+  end
+
+  defp append_exclude_entry(exclude_path, entry) do
+    existing = if File.exists?(exclude_path), do: File.read!(exclude_path), else: ""
+
+    if String.contains?(existing, entry) do
+      :ok
+    else
+      separator = if existing == "" or String.ends_with?(existing, "\n"), do: "", else: "\n"
+      File.write!(exclude_path, existing <> separator <> "\n# Symphony 注入的 MCP 配置，不要提交\n" <> entry <> "\n")
+    end
   end
 
   defp shell_escape(value) when is_binary(value) do

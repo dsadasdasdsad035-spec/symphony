@@ -138,6 +138,78 @@ defmodule SymphonyElixir.AgentCursorCliTest do
              CursorCli.start_session(workspace, worker_host: "build-host")
   end
 
+  test "start_session 把 Symphony MCP 端点写进 .cursor/mcp.json 并与已有配置合并", %{
+    workspace_root: workspace_root,
+    workspace: workspace
+  } do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "cursor_cli",
+      server_port: 4599
+    )
+
+    cursor_dir = Path.join(workspace, ".cursor")
+    File.mkdir_p!(cursor_dir)
+
+    File.write!(
+      Path.join(cursor_dir, "mcp.json"),
+      Jason.encode!(%{"mcpServers" => %{"existing" => %{"type" => "http", "url" => "http://example.test/mcp"}}})
+    )
+
+    assert {:ok, session} = CursorCli.start_session(workspace, [])
+    on_exit(fn -> CursorCli.stop_session(session) end)
+
+    assert session.mcp_url == "http://127.0.0.1:4599/mcp"
+
+    decoded = Path.join(cursor_dir, "mcp.json") |> File.read!() |> Jason.decode!()
+
+    assert decoded["mcpServers"]["symphony"] == %{
+             "type" => "http",
+             "url" => "http://127.0.0.1:4599/mcp"
+           }
+
+    # 已有 MCP server 必须保留
+    assert decoded["mcpServers"]["existing"]["url"] == "http://example.test/mcp"
+  end
+
+  test "写 mcp.json 时同步把路径加入 .git/info/exclude，避免被提交", %{
+    workspace_root: workspace_root,
+    workspace: workspace
+  } do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "cursor_cli",
+      server_port: 4599
+    )
+
+    File.mkdir_p!(Path.join(workspace, ".git/info"))
+
+    assert {:ok, session} = CursorCli.start_session(workspace, [])
+    on_exit(fn -> CursorCli.stop_session(session) end)
+
+    exclude = Path.join(workspace, ".git/info/exclude") |> File.read!()
+    assert exclude =~ ".cursor/mcp.json"
+
+    # 重复启动不应重复追加
+    assert {:ok, session2} = CursorCli.start_session(workspace, [])
+    CursorCli.stop_session(session2)
+
+    assert exclude == Path.join(workspace, ".git/info/exclude") |> File.read!()
+  end
+
+  test "没有 HTTP 端口时不写 mcp.json", %{workspace_root: workspace_root, workspace: workspace} do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "cursor_cli"
+    )
+
+    assert {:ok, session} = CursorCli.start_session(workspace, [])
+    on_exit(fn -> CursorCli.stop_session(session) end)
+
+    assert session.mcp_url == nil
+    refute File.exists?(Path.join(workspace, ".cursor/mcp.json"))
+  end
+
   # ------------------------------------------------------------------ helpers
 
   defp collect_events(acc \\ []) do

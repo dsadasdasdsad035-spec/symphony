@@ -28,6 +28,13 @@ defmodule SymphonyElixirWeb.Router do
     live("/", DashboardLive, :index)
   end
 
+  # MCP over Streamable HTTP：让 Cursor CLI 这类单向 CLI 也能调用 Symphony
+  # 在本地注册的 tracker 工具。必须定义在兜底 404 路由之前。
+  scope "/", SymphonyElixirWeb do
+    post("/mcp", McpController, :handle)
+    match(:*, "/mcp", McpController, :method_not_allowed)
+  end
+
   scope "/", SymphonyElixirWeb do
     get("/api/v1/state", ObservabilityApiController, :state)
 
