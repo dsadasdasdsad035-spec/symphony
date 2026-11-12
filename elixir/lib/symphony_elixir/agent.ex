@@ -14,8 +14,9 @@ defmodule SymphonyElixir.Agent do
     * `SymphonyElixir.Agent.Codex` —— Codex app-server（JSON-RPC over stdio，默认）
     * `SymphonyElixir.Agent.CursorCli` —— Cursor CLI 的 `stream-json` 输出
     * `SymphonyElixir.Agent.Zcode` —— ZCode CLI 的 `stream-json` 输出
+    * `SymphonyElixir.Agent.ClaudeCli` —— Claude Code CLI 的 `stream-json` 输出
 
-  由 `agent.kind` 配置选择，取值 `codex` / `cursor_cli` / `zcode`。
+  由 `agent.kind` 配置选择，取值 `codex` / `cursor_cli` / `zcode` / `claude_cli`。
 
   `on_message` 收到的事件沿用 Codex 的语义（`:session_started`、`:agent_message`、
   `:notification`、`:turn_completed`、`:turn_failed`、`:turn_ended_with_error`、
@@ -45,6 +46,7 @@ defmodule SymphonyElixir.Agent do
     case settings.agent.kind do
       "cursor_cli" -> SymphonyElixir.Agent.CursorCli
       "zcode" -> SymphonyElixir.Agent.Zcode
+      "claude_cli" -> SymphonyElixir.Agent.ClaudeCli
       _ -> SymphonyElixir.Agent.Codex
     end
   rescue

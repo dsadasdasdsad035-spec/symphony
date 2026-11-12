@@ -107,7 +107,9 @@ defmodule SymphonyElixir.TestSupport do
           agent_kind: "codex",
           agent_cursor_command: "cursor-agent",
           agent_cursor_model: nil,
-          agent_zcode_command: "zcode",
+          agent_zcode_command: nil,
+          agent_claude_command: "claude",
+          agent_claude_model: nil,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
@@ -150,6 +152,8 @@ defmodule SymphonyElixir.TestSupport do
     agent_cursor_command = Keyword.get(config, :agent_cursor_command)
     agent_cursor_model = Keyword.get(config, :agent_cursor_model)
     agent_zcode_command = Keyword.get(config, :agent_zcode_command)
+    agent_claude_command = Keyword.get(config, :agent_claude_command)
+    agent_claude_model = Keyword.get(config, :agent_claude_model)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
@@ -194,6 +198,8 @@ defmodule SymphonyElixir.TestSupport do
         "  cursor_command: #{yaml_value(agent_cursor_command)}",
         agent_cursor_model && "  cursor_model: #{yaml_value(agent_cursor_model)}",
         agent_zcode_command && "  zcode_command: #{yaml_value(agent_zcode_command)}",
+        agent_claude_command && "  claude_command: #{yaml_value(agent_claude_command)}",
+        agent_claude_model && "  claude_model: #{yaml_value(agent_claude_model)}",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",

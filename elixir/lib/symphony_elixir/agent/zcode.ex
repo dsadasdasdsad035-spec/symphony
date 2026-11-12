@@ -495,14 +495,14 @@ defmodule SymphonyElixir.Agent.Zcode do
   end
 
   # 源文件比副本新（或副本不存在）时重新复制，兼顾 ZCode 升级后的自动跟随。
+  # 用 :posix 时间戳比较，避免 File.Stat.mtime 的 Erlang 时间元组。
   defp sync_file(source, target) do
-    case File.stat(source) do
+    case File.stat(source, time: :posix) do
       {:ok, %File.Stat{} = source_stat} ->
         needs_copy? =
-          case File.stat(target) do
+          case File.stat(target, time: :posix) do
             {:ok, %File.Stat{} = target_stat} ->
-              target_stat.size != source_stat.size or
-                NaiveDateTime.compare(target_stat.mtime, source_stat.mtime) == :lt
+              target_stat.size != source_stat.size or target_stat.mtime < source_stat.mtime
 
             _ ->
               true
@@ -522,20 +522,22 @@ defmodule SymphonyElixir.Agent.Zcode do
 
   # ---------------------------------------------------------------- MCP 接线
 
-  # 把 Symphony 的 MCP 端点（/mcp）写进工作区的 zcode.json，
-  # 让 zcode 以原生工具的方式拿到 linear_graphql 等 tracker 工具。
-  # 同时把该文件加入 .git/info/exclude，避免被 agent 的 git add -A 提交进仓库。
-  defp ensure_mcp_config(workspace) do
+  # 把 Symphony 的 MCP 端点（/mcp）写进 ZCode 的用户级配置
+  # （默认 ~/.zcode/cli/config.json），让 zcode 以原生工具的方式拿到
+  # linear_graphql 等 tracker 工具。
+  #
+  # 注意：内置运行时（桌面版自带）在这个版本只认用户级配置，
+  # 项目级 zcode.json / .zcode/config.json 里声明的 MCP server 会被忽略。
+  # 因此这里必须写用户级配置；只覆盖 symphony 这一项，其余原样保留。
+  defp ensure_mcp_config(_workspace) do
     case mcp_endpoint_url() do
       nil ->
         Logger.warning("zcode 未检测到 Symphony HTTP 端口，跳过 MCP 注册；线性工具将不可用")
         nil
 
       url ->
-        if write_mcp_config(workspace, url) == :error do
+        if write_mcp_config(url) == :error do
           Logger.warning("zcode 写入 MCP 配置失败，线性工具可能不可用")
-        else
-          exclude_from_git(workspace)
         end
 
         url
@@ -564,8 +566,18 @@ defmodule SymphonyElixir.Agent.Zcode do
     _ -> nil
   end
 
-  defp write_mcp_config(workspace, url) do
-    path = Path.join(workspace, "zcode.json")
+  # ZCode 的用户级配置文件位置。测试用环境变量指到临时文件，
+  # 避免污染真实的 ~/.zcode/cli/config.json。
+  defp config_path do
+    case System.get_env("SYMPHONY_ZCODE_CONFIG_PATH") do
+      path when is_binary(path) and path != "" -> Path.expand(path)
+      _ -> Path.join(System.user_home!(), ".zcode/cli/config.json")
+    end
+  end
+
+  defp write_mcp_config(url) do
+    path = config_path()
+    File.mkdir_p!(Path.dirname(path))
 
     existing =
       case File.read(path) do
@@ -599,33 +611,8 @@ defmodule SymphonyElixir.Agent.Zcode do
     :ok
   rescue
     error ->
-      Logger.warning("写入 zcode.json 失败: #{inspect(error)}")
+      Logger.warning("写入 zcode 用户配置失败: #{inspect(error)}")
       :error
-  end
-
-  defp exclude_from_git(workspace) do
-    exclude_path = Path.join([workspace, ".git", "info", "exclude"])
-
-    if File.dir?(Path.dirname(exclude_path)) do
-      append_exclude_entry(exclude_path, "zcode.json")
-    end
-
-    :ok
-  rescue
-    error ->
-      Logger.warning("写入 .git/info/exclude 失败: #{inspect(error)}")
-      :error
-  end
-
-  defp append_exclude_entry(exclude_path, entry) do
-    existing = if File.exists?(exclude_path), do: File.read!(exclude_path), else: ""
-
-    if String.contains?(existing, entry) do
-      :ok
-    else
-      separator = if existing == "" or String.ends_with?(existing, "\n"), do: "", else: "\n"
-      File.write!(exclude_path, existing <> separator <> "\n# Symphony 注入的 MCP 配置，不要提交\n" <> entry <> "\n")
-    end
   end
 
   defp shell_escape(value) when is_binary(value) do

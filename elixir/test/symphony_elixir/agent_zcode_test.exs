@@ -182,18 +182,17 @@ defmodule SymphonyElixir.AgentZcodeTest do
              Zcode.start_session(workspace, worker_host: "build-host")
   end
 
-  test "start_session 把 Symphony MCP 端点写进 zcode.json 并与已有配置合并", %{
+  test "start_session 把 Symphony MCP 端点写进 ZCode 用户级配置并与已有配置合并", %{
+    test_root: test_root,
     workspace_root: workspace_root,
     workspace: workspace
   } do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      workspace_root: workspace_root,
-      agent_kind: "zcode",
-      server_port: 4599
-    )
+    config_path = Path.join(test_root, "zcode-user-config.json")
+    System.put_env("SYMPHONY_ZCODE_CONFIG_PATH", config_path)
+    on_exit(fn -> System.delete_env("SYMPHONY_ZCODE_CONFIG_PATH") end)
 
     File.write!(
-      Path.join(workspace, "zcode.json"),
+      config_path,
       Jason.encode!(%{
         "mcp" => %{
           "servers" => %{"existing" => %{"type" => "http", "url" => "http://example.test/mcp"}}
@@ -201,12 +200,18 @@ defmodule SymphonyElixir.AgentZcodeTest do
       })
     )
 
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "zcode",
+      server_port: 4599
+    )
+
     assert {:ok, session} = Zcode.start_session(workspace, [])
     on_exit(fn -> Zcode.stop_session(session) end)
 
     assert session.mcp_url == "http://127.0.0.1:4599/mcp"
 
-    decoded = Path.join(workspace, "zcode.json") |> File.read!() |> Jason.decode!()
+    decoded = config_path |> File.read!() |> Jason.decode!()
 
     # ZCode 要求显式开启 MCP 能力
     assert decoded["features"]["mcp"] == true
@@ -218,35 +223,19 @@ defmodule SymphonyElixir.AgentZcodeTest do
              "timeoutMs" => 30_000
            }
 
+    # 已有 MCP server 必须保留
     assert decoded["mcp"]["servers"]["existing"]["url"] == "http://example.test/mcp"
   end
 
-  test "写 zcode.json 时同步加入 .git/info/exclude，避免被提交", %{
+  test "没有 HTTP 端口时不写 ZCode 配置", %{
+    test_root: test_root,
     workspace_root: workspace_root,
     workspace: workspace
   } do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      workspace_root: workspace_root,
-      agent_kind: "zcode",
-      server_port: 4599
-    )
+    config_path = Path.join(test_root, "zcode-user-config-empty.json")
+    System.put_env("SYMPHONY_ZCODE_CONFIG_PATH", config_path)
+    on_exit(fn -> System.delete_env("SYMPHONY_ZCODE_CONFIG_PATH") end)
 
-    File.mkdir_p!(Path.join(workspace, ".git/info"))
-
-    assert {:ok, session} = Zcode.start_session(workspace, [])
-    on_exit(fn -> Zcode.stop_session(session) end)
-
-    exclude_path = Path.join(workspace, ".git/info/exclude")
-    assert File.read!(exclude_path) =~ "zcode.json"
-
-    # 重复启动不应重复追加
-    assert {:ok, session2} = Zcode.start_session(workspace, [])
-    Zcode.stop_session(session2)
-
-    assert File.read!(exclude_path) =~ ~r/zcode\.json(?![\s\S]*zcode\.json)/
-  end
-
-  test "没有 HTTP 端口时不写 zcode.json", %{workspace_root: workspace_root, workspace: workspace} do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: workspace_root,
       agent_kind: "zcode"
@@ -256,7 +245,7 @@ defmodule SymphonyElixir.AgentZcodeTest do
     on_exit(fn -> Zcode.stop_session(session) end)
 
     assert session.mcp_url == nil
-    refute File.exists?(Path.join(workspace, "zcode.json"))
+    refute File.exists?(config_path)
   end
 
   # ------------------------------------------------------------------ helpers
