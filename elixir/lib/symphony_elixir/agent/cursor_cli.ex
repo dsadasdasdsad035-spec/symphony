@@ -432,10 +432,44 @@ defmodule SymphonyElixir.Agent.CursorCli do
         nil
 
       url ->
-        write_mcp_config(workspace, url)
+        if write_mcp_config(workspace, url) == :error do
+          Logger.warning("cursor-cli 写入 MCP 配置失败，线性工具可能不可用")
+        else
+          approve_mcp_server(workspace)
+        end
+
         exclude_from_git(workspace)
         url
     end
+  end
+
+  # cursor-agent 的 MCP 批准记录是「按工作区 + 按 server 配置哈希」存的
+  # （~/.cursor/projects/<工作区>/mcp-approvals.json），URL 一变（例如端口随机）
+  # 哈希就变，需要重新批准。启动参数 --approve-mcps 在部分子命令下不生效，
+  # 因此这里显式调用 mcp enable 做一次幂等批准，避免工具静默不可用。
+  defp approve_mcp_server(workspace) do
+    binary = cursor_command() |> String.split() |> List.first()
+
+    if is_binary(binary) and binary != "" do
+      case System.cmd(binary, ["mcp", "enable", @mcp_server_name],
+             cd: workspace,
+             stderr_to_stdout: true,
+             env: [{"TERM", "dumb"}]
+           ) do
+        {_output, 0} ->
+          :ok
+
+        {output, code} ->
+          Logger.warning("cursor-cli 预批准 MCP server 失败(#{code}): #{String.trim(output)}")
+          :error
+      end
+    else
+      :error
+    end
+  rescue
+    error ->
+      Logger.warning("cursor-cli 预批准 MCP server 异常: #{inspect(error)}")
+      :error
   end
 
   defp mcp_endpoint_url do

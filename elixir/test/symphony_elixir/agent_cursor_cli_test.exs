@@ -296,6 +296,85 @@ defmodule SymphonyElixir.AgentCursorCliTest do
     assert :turn_ended_with_error in events
   end
 
+  test "start_session 会主动批准 MCP server，避免工具静默不可用", %{
+    test_root: test_root,
+    workspace_root: workspace_root,
+    workspace: workspace
+  } do
+    args_log = Path.join(test_root, "args-mcp.log")
+    stub = write_stub_cli(test_root, args_log)
+    File.mkdir_p!(Path.join(workspace, ".git/info"))
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "cursor_cli",
+      agent_cursor_command: stub,
+      server_port: 0
+    )
+
+    start_supervised!({SymphonyElixir.HttpServer, port: 0, orchestrator: SymphonyElixir.Orchestrator})
+    wait_for_http_port()
+
+    assert {:ok, session} = CursorCli.start_session(workspace, [])
+    on_exit(fn -> CursorCli.stop_session(session) end)
+
+    assert is_binary(session.mcp_url)
+    assert session.mcp_url =~ "/mcp"
+
+    # 工作区里必须写出 MCP 配置，并把它排除出 git
+    mcp_config = Path.join(workspace, ".cursor/mcp.json")
+    assert File.exists?(mcp_config)
+    assert {:ok, decoded} = Jason.decode(File.read!(mcp_config))
+    assert decoded["mcpServers"]["symphony"]["url"] == session.mcp_url
+
+    exclude = File.read!(Path.join(workspace, ".git/info/exclude"))
+    assert exclude =~ ".cursor/mcp.json"
+
+    # 并且要显式调用 mcp enable 完成批准
+    assert File.read!(args_log) =~ "mcp enable symphony"
+  end
+
+  test "MCP 配置写入失败时不阻断会话", %{
+    test_root: test_root,
+    workspace_root: workspace_root,
+    workspace: workspace
+  } do
+    args_log = Path.join(test_root, "args-mcp-fail.log")
+    stub = write_stub_cli(test_root, args_log)
+
+    # 把 .cursor 占位成普通文件，让 mkdir 失败
+    File.write!(Path.join(workspace, ".cursor"), "not a dir")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "cursor_cli",
+      agent_cursor_command: stub,
+      server_port: 0
+    )
+
+    start_supervised!({SymphonyElixir.HttpServer, port: 0, orchestrator: SymphonyElixir.Orchestrator})
+    wait_for_http_port()
+
+    assert {:ok, session} = CursorCli.start_session(workspace, [])
+    on_exit(fn -> CursorCli.stop_session(session) end)
+
+    assert is_binary(session.mcp_url)
+  end
+
+  defp wait_for_http_port(attempts \\ 100) do
+    case SymphonyElixir.HttpServer.bound_port() do
+      port when is_integer(port) and port > 0 ->
+        port
+
+      _ when attempts > 0 ->
+        Process.sleep(30)
+        wait_for_http_port(attempts - 1)
+
+      _ ->
+        flunk("HTTP 端点未就绪")
+    end
+  end
+
   # ------------------------------------------------------------------ helpers
 
   defp collect_events(acc \\ []) do
