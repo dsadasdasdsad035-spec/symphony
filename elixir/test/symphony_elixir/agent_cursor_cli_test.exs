@@ -210,6 +210,92 @@ defmodule SymphonyElixir.AgentCursorCliTest do
     refute File.exists?(Path.join(workspace, ".cursor/mcp.json"))
   end
 
+  test "cursor_model 配置会传给 --model，留空则不传", %{
+    test_root: test_root,
+    workspace_root: workspace_root,
+    workspace: workspace
+  } do
+    args_log = Path.join(test_root, "args-model.log")
+    stub = write_stub_cli(test_root, args_log)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "cursor_cli",
+      agent_cursor_command: stub,
+      agent_cursor_model: "deepseek-v41-flash-1017-medium"
+    )
+
+    issue = %Issue{id: "issue-m", identifier: "MT-M", title: "模型参数", state: "In Progress"}
+
+    assert {:ok, session} = CursorCli.start_session(workspace, [])
+    on_exit(fn -> CursorCli.stop_session(session) end)
+
+    assert session.model == "deepseek-v41-flash-1017-medium"
+
+    assert {:ok, _} = CursorCli.run_turn(session, "任务", issue, on_message: fn _ -> :ok end)
+
+    # stub 用 "$*" 记录参数，会丢掉引号，这里只校验值与位置
+    assert File.read!(args_log) =~ "--model deepseek-v41-flash-1017-medium"
+  end
+
+  test "未配置 cursor_model 时不传 --model", %{
+    test_root: test_root,
+    workspace_root: workspace_root,
+    workspace: workspace
+  } do
+    args_log = Path.join(test_root, "args-nomodel.log")
+    stub = write_stub_cli(test_root, args_log)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "cursor_cli",
+      agent_cursor_command: stub
+    )
+
+    issue = %Issue{id: "issue-n", identifier: "MT-N", title: "无模型", state: "In Progress"}
+
+    assert {:ok, session} = CursorCli.start_session(workspace, [])
+    on_exit(fn -> CursorCli.stop_session(session) end)
+
+    assert session.model == nil
+
+    assert {:ok, _} = CursorCli.run_turn(session, "任务", issue, on_message: fn _ -> :ok end)
+
+    refute File.read!(args_log) =~ "--model"
+  end
+
+  test "子进程异常退出时上报 turn_ended_with_error 而不是沉默", %{
+    test_root: test_root,
+    workspace_root: workspace_root,
+    workspace: workspace
+  } do
+    args_log = Path.join(test_root, "args-crash.log")
+    stub = write_stub_cli(test_root, args_log, mode: "crash")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "cursor_cli",
+      agent_cursor_command: stub
+    )
+
+    parent = self()
+    on_message = fn message -> send(parent, {:agent_event, message}) end
+
+    assert {:ok, session} = CursorCli.start_session(workspace, [])
+    on_exit(fn -> CursorCli.stop_session(session) end)
+
+    issue = %Issue{id: "issue-c", identifier: "MT-C", title: "崩溃", state: "In Progress"}
+
+    assert {:error, {:port_exit, 1, output}} =
+             CursorCli.run_turn(session, "会崩", issue, on_message: on_message)
+
+    assert output =~ "额度" or output =~ "quota" or output =~ "limit"
+
+    events = collect_events()
+    assert :session_started in events
+    assert :turn_ended_with_error in events
+  end
+
   # ------------------------------------------------------------------ helpers
 
   defp collect_events(acc \\ []) do
@@ -231,6 +317,13 @@ defmodule SymphonyElixir.AgentCursorCliTest do
           echo '{"type":"system","subtype":"init","session_id":"chat-abc","model":"stub"}'
           echo '{"type":"error","message":"模型额度不足"}'
           exit 0
+          """
+
+        "crash" ->
+          """
+          echo '{"type":"system","subtype":"init","session_id":"chat-abc","model":"stub"}'
+          echo 'b: weekly usage limit reached, quota exhausted' >&2
+          exit 1
           """
 
         _ ->

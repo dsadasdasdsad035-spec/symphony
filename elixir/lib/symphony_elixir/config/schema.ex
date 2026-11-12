@@ -151,6 +151,7 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:kind, :string, default: "codex")
       field(:cursor_command, :string, default: "cursor-agent")
+      field(:cursor_model, :string, default: nil)
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
@@ -165,6 +166,7 @@ defmodule SymphonyElixir.Config.Schema do
         [
           :kind,
           :cursor_command,
+          :cursor_model,
           :max_concurrent_agents,
           :max_turns,
           :max_retry_backoff_ms,

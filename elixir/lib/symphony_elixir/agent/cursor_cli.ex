@@ -53,6 +53,7 @@ defmodule SymphonyElixir.Agent.CursorCli do
              workspace: expanded_workspace,
              worker_host: nil,
              command: cursor_command(),
+             model: cursor_model(),
              mcp_url: mcp_url,
              secret_environment_names: secret_environment_names(),
              state: state
@@ -68,6 +69,7 @@ defmodule SymphonyElixir.Agent.CursorCli do
       workspace: workspace,
       command: command,
       state: state,
+      model: model,
       secret_environment_names: secret_names
     } = session
 
@@ -84,14 +86,36 @@ defmodule SymphonyElixir.Agent.CursorCli do
       last_plain: ""
     }
 
-    launch = build_launch_command(command, session_id, prompt, secret_names)
+    launch = build_launch_command(command, session_id, prompt, secret_names, model)
 
     case start_port(workspace, launch, context.metadata, secret_names) do
       {:ok, port, metadata} ->
-        try do
-          receive_loop(port, %{context | metadata: metadata}, "", timeout_ms())
-        after
-          close_port(port)
+        result =
+          try do
+            receive_loop(port, %{context | metadata: metadata}, "", timeout_ms())
+          after
+            close_port(port)
+          end
+
+        # 子进程非正常退出（额度耗尽、崩溃、认证失效）时必须发事件，
+        # 否则看板上只显示"running"，排障时看不到任何线索。
+        case result do
+          {:ok, _turn} = ok ->
+            ok
+
+          {:error, {:port_exit, status, output}} ->
+            emit(
+              on_message,
+              :turn_ended_with_error,
+              %{reason: {:port_exit, status}, output: output},
+              Map.put(metadata, :session_id, context.session_id)
+            )
+
+            {:error, {:port_exit, status, output}}
+
+          {:error, reason} = error ->
+            emit(on_message, :turn_ended_with_error, %{reason: reason}, metadata)
+            error
         end
 
       {:error, reason} ->
@@ -330,7 +354,7 @@ defmodule SymphonyElixir.Agent.CursorCli do
 
   # ---------------------------------------------------------------- 命令构造
 
-  defp build_launch_command(command, session_id, prompt, secret_names) do
+  defp build_launch_command(command, session_id, prompt, secret_names, model) do
     base = [
       command,
       "-p",
@@ -342,6 +366,18 @@ defmodule SymphonyElixir.Agent.CursorCli do
       "--approve-mcps"
     ]
 
+    model_args =
+      case model do
+        value when is_binary(value) ->
+          case String.trim(value) do
+            "" -> []
+            trimmed -> ["--model", shell_escape(trimmed)]
+          end
+
+        _ ->
+          []
+      end
+
     resume =
       if is_binary(session_id) and String.trim(session_id) != "" do
         ["--resume", shell_escape(session_id)]
@@ -349,9 +385,24 @@ defmodule SymphonyElixir.Agent.CursorCli do
         []
       end
 
-    [unset_prefix(secret_names), Enum.join(base ++ resume ++ [shell_escape(prompt)], " ")]
+    [unset_prefix(secret_names), Enum.join(base ++ model_args ++ resume ++ [shell_escape(prompt)], " ")]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
+  end
+
+  defp cursor_model do
+    case Config.settings!().agent.cursor_model do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
   end
 
   defp cursor_command do
