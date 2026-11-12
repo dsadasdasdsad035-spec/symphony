@@ -20,14 +20,28 @@ defmodule SymphonyElixir.CursorMcpIntegrationTest do
                 end)
 
   setup do
-    root = Path.join(System.tmp_dir!(), "symphony-cursor-mcp-#{System.unique_integer([:positive])}")
+    token = "symphony-cursor-mcp-#{System.unique_integer([:positive])}"
+    root = Path.join(System.tmp_dir!(), token)
     workspaces = Path.join(root, "workspaces")
     workspace = Path.join(workspaces, "MT-1")
     File.mkdir_p!(workspace)
     File.mkdir_p!(Path.join(workspace, ".git/info"))
-    on_exit(fn -> File.rm_rf(root) end)
+
+    on_exit(fn ->
+      File.rm_rf(root)
+      # cursor-agent 会按工作区路径在 ~/.cursor/projects 下留批准记录，
+      # 这里一并清掉，避免每次跑测试都堆一份垃圾
+      cleanup_cursor_project_state(token)
+    end)
 
     %{root: root, workspaces: workspaces, workspace: workspace}
+  end
+
+  defp cleanup_cursor_project_state(token) do
+    Path.expand("~/.cursor/projects")
+    |> Path.join("*#{token}*")
+    |> Path.wildcard()
+    |> Enum.each(&File.rm_rf/1)
   end
 
   @tag skip: @skip_reason
