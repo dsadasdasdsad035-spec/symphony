@@ -167,6 +167,7 @@ defmodule SymphonyElixir.Shanzhi.AdapterTest do
     assert issue.url == "http://sf.sieiot.com/cooperation/bug?id=83204"
     assert "severity:2" in issue.labels
     assert "env:test" in issue.labels
+    assert issue.attributes == %{"keywords" => ""}
 
     assert request_urls() == [@login_url, @list_url]
 

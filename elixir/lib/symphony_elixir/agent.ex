@@ -16,7 +16,8 @@ defmodule SymphonyElixir.Agent do
     * `SymphonyElixir.Agent.Zcode` —— ZCode CLI 的 `stream-json` 输出
     * `SymphonyElixir.Agent.ClaudeCli` —— Claude Code CLI 的 `stream-json` 输出
 
-  由 `agent.kind` 配置选择，取值 `codex` / `cursor_cli` / `zcode` / `claude_cli`。
+  全局默认由 `agent.kind` 配置；工单项若带 agent CLI 关键字（善治 `keywords`、
+  Linear/Jira 标签等），则按 `SymphonyElixir.Agent.Kind` 解析，空白时默认 `codex`。
 
   `on_message` 收到的事件沿用 Codex 的语义（`:session_started`、`:agent_message`、
   `:notification`、`:turn_completed`、`:turn_failed`、`:turn_ended_with_error`、
@@ -38,6 +39,14 @@ defmodule SymphonyElixir.Agent do
 
   @doc """
   按 `agent.kind` 解析当前使用的后端模块。配置缺失或非法时回退到 Codex。
+  """
+  @spec impl_for(SymphonyElixir.Tracker.Issue.t()) :: {String.t(), module()}
+  def impl_for(%SymphonyElixir.Tracker.Issue{} = issue) do
+    SymphonyElixir.Agent.Kind.impl_for(issue)
+  end
+
+  @doc """
+  按 `agent.kind` 解析工作流级默认后端（无工单项上下文时使用）。
   """
   @spec impl() :: module()
   def impl do

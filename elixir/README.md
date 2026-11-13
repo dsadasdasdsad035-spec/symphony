@@ -330,6 +330,9 @@ tracker:
   `zt-bug/get-by-id` (cached for 2 minutes so polling does not refetch every bug each cycle), and
   exposes route-safe `SF-<id>` identifiers. Member names resolve to mobiles through
   `base-person/find-pagination-dept-sf`, cached for 5 minutes.
+- **Agent CLI routing:** put the CLI name in the Bug **keywords** field (`codex`, `cursor`,
+  `cursor cli`, `zcode`, `claude`, etc.). Leave blank to use Codex. Linear and Jira use the
+  same token names on **issue labels** (`SymphonyElixir.Agent.Kind`).
 - Tools: `shanzhi_get_bug`, `shanzhi_bug_history`, `shanzhi_confirm_bug`, `shanzhi_remark_bug`,
   and `shanzhi_resolve_bug` run host-side with the cached login token. `shanzhi_confirm_bug` exists
   so an agent can record that it genuinely reproduced a bug; its description tells the agent to use

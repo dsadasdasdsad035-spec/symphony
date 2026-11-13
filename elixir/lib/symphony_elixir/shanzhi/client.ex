@@ -782,6 +782,7 @@ defmodule SymphonyElixir.Shanzhi.Client do
       url: issue_url(settings, bug_id),
       assignee_id: bug["assignedToName"] || bug["assignedTo"],
       labels: issue_labels(bug),
+      attributes: %{"keywords" => keyword_field(bug)},
       blocked_by: [],
       dispatchable: true,
       created_at: parse_datetime(bug["openedDate"]),
@@ -857,6 +858,9 @@ defmodule SymphonyElixir.Shanzhi.Client do
 
   defp issue_url(%{web_url: web_url}, bug_id),
     do: "#{String.trim_trailing(web_url, "/")}/cooperation/bug?id=#{bug_id}"
+
+  defp keyword_field(%{"keywords" => keywords}) when is_binary(keywords), do: keywords
+  defp keyword_field(%{}), do: ""
 
   defp issue_labels(bug) do
     [

@@ -7,7 +7,8 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{Agent, AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.Agent.Kind, as: AgentKind
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -939,8 +940,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
     recipient = self()
+    {agent_kind, _agent_impl} = Agent.impl_for(issue)
 
-    case select_worker_host(state, preferred_worker_host) do
+    case select_worker_host(state, preferred_worker_host, agent_kind) do
       :no_worker_capacity ->
         Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
         state
@@ -951,13 +953,24 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+    {agent_kind, agent_impl} = Agent.impl_for(issue)
+
     case Task.Supervisor.start_child(state.task_supervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(
+             issue,
+             recipient,
+             attempt: attempt,
+             worker_host: worker_host,
+             agent_impl: agent_impl,
+             agent_kind: agent_kind
+           )
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+        Logger.info(
+          "Dispatching issue to agent: #{issue_context(issue)} agent_kind=#{agent_kind} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}"
+        )
 
         running =
           Map.put(state.running, issue.id, %{
@@ -965,6 +978,7 @@ defmodule SymphonyElixir.Orchestrator do
             ref: ref,
             identifier: issue.identifier,
             issue: issue,
+            agent_kind: agent_kind,
             worker_host: worker_host,
             workspace_path: nil,
             session_id: nil,
@@ -1278,7 +1292,21 @@ defmodule SymphonyElixir.Orchestrator do
     Map.put(running_entry, key, value)
   end
 
-  defp select_worker_host(%State{} = state, preferred_worker_host) do
+  defp select_worker_host(%State{} = state, preferred_worker_host, agent_kind \\ nil) do
+    if is_binary(agent_kind) and not AgentKind.remote_capable?(agent_kind) do
+      if preferred_worker_host not in [nil, ""] do
+        Logger.info(
+          "agent_kind=#{agent_kind} 不支持 SSH worker，改在本地执行 issue worker_host=#{inspect(preferred_worker_host)}"
+        )
+      end
+
+      nil
+    else
+      do_select_worker_host(state, preferred_worker_host)
+    end
+  end
+
+  defp do_select_worker_host(%State{} = state, preferred_worker_host) do
     case Config.settings!().worker.ssh_hosts do
       [] ->
         nil
@@ -1323,11 +1351,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp worker_slots_available?(%State{} = state) do
-    select_worker_host(state, nil) != :no_worker_capacity
+    do_select_worker_host(state, nil) != :no_worker_capacity
   end
 
   defp worker_slots_available?(%State{} = state, preferred_worker_host) do
-    select_worker_host(state, preferred_worker_host) != :no_worker_capacity
+    do_select_worker_host(state, preferred_worker_host) != :no_worker_capacity
   end
 
   defp worker_host_slots_available?(%State{} = state, worker_host) when is_binary(worker_host) do

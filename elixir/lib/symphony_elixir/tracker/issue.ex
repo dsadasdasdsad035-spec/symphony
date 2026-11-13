@@ -22,6 +22,7 @@ defmodule SymphonyElixir.Tracker.Issue do
     :assignee_id,
     blocked_by: [],
     labels: [],
+    attributes: %{},
     dispatchable: false,
     created_at: nil,
     updated_at: nil
@@ -39,6 +40,7 @@ defmodule SymphonyElixir.Tracker.Issue do
           url: String.t() | nil,
           assignee_id: String.t() | nil,
           labels: [String.t()],
+          attributes: map(),
           blocked_by: [map()],
           dispatchable: boolean(),
           created_at: DateTime.t() | nil,

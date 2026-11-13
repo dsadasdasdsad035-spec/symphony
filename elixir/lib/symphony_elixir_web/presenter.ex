@@ -105,6 +105,7 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_identifier: entry.identifier,
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
+      agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -129,6 +130,7 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
+      agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path)
     }
@@ -141,6 +143,7 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
       error: entry.error,
+      agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -153,6 +156,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp running_issue_payload(running) do
     %{
+      agent_kind: Map.get(running, :agent_kind),
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
       session_id: running.session_id,
