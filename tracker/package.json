@@ -1,0 +1,20 @@
+{
+  "name": "symphony-tracker",
+  "private": true,
+  "version": "0.1.0",
+  "description": "轻量 Linear 风格工单系统，可供 Symphony issue_feed 轮询",
+  "scripts": {
+    "dev": "npm run dev -w @symphony-tracker/server & npm run dev -w @symphony-tracker/web",
+    "dev:server": "npm run dev -w @symphony-tracker/server",
+    "dev:web": "npm run dev -w @symphony-tracker/web",
+    "build": "npm run build -w @symphony-tracker/web",
+    "start": "npm run start -w @symphony-tracker/server",
+    "test": "bash scripts/e2e-test.sh",
+    "test:full": "bash scripts/e2e-test.sh --with-workflow",
+    "test:full-chain": "bash scripts/e2e-test.sh --full-chain --with-workflow"
+  },
+  "workspaces": [
+    "server",
+    "web"
+  ]
+}

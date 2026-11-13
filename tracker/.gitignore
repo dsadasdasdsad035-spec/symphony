@@ -1,0 +1,7 @@
+node_modules/
+data/*.db
+data/*.db-*
+web/dist/
+scripts/.e2e-playwright-marker.json
+web/test-results/
+web/playwright-report/

@@ -459,6 +459,12 @@ defmodule SymphonyElixir.Config.Schema do
             settings.tracker.terminal_states || ["closed"]
           }
 
+        "issue_feed" ->
+          {
+            settings.tracker.active_states || ["backlog", "todo", "in_progress", "in_review"],
+            settings.tracker.terminal_states || ["done", "cancelled"]
+          }
+
         _ ->
           {settings.tracker.active_states, settings.tracker.terminal_states}
       end
