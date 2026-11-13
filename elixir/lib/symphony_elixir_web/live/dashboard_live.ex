@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Agent.Kind, as: AgentKind
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -138,6 +139,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <table class="data-table data-table-running">
                 <colgroup>
                   <col style="width: 12rem;" />
+                  <col style="width: 7.5rem;" />
                   <col style="width: 8rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
@@ -147,6 +149,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Agent CLI</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
@@ -161,6 +164,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
+                    </td>
+                    <td>
+                      <span class="state-badge state-badge-agent" title={entry.agent_kind || "codex"}>
+                        <%= AgentKind.display_label(entry.agent_kind) %>
+                      </span>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state)}>
@@ -228,6 +236,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Agent CLI</th>
                     <th>State</th>
                     <th>Session</th>
                     <th>Blocked at</th>
@@ -242,6 +251,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
+                    </td>
+                    <td>
+                      <span class="state-badge state-badge-agent" title={entry.agent_kind || "codex"}>
+                        <%= AgentKind.display_label(entry.agent_kind) %>
+                      </span>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state || "Blocked")}>
@@ -302,6 +316,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Agent CLI</th>
                     <th>Attempt</th>
                     <th>Due at</th>
                     <th>Error</th>
@@ -314,6 +329,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
+                    </td>
+                    <td>
+                      <span class="state-badge state-badge-agent" title={entry.agent_kind || "codex"}>
+                        <%= AgentKind.display_label(entry.agent_kind) %>
+                      </span>
                     </td>
                     <td><%= entry.attempt %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>

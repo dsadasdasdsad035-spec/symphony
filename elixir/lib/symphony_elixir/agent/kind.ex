@@ -86,6 +86,21 @@ defmodule SymphonyElixir.Agent.Kind do
   def remote_capable?(kind) when is_binary(kind), do: MapSet.member?(@remote_kinds, kind)
   def remote_capable?(_kind), do: false
 
+  @display_labels %{
+    "codex" => "Codex",
+    "cursor_cli" => "Cursor CLI",
+    "zcode" => "ZCode",
+    "claude_cli" => "Claude CLI"
+  }
+
+  @doc "看板/API 展示用的短标签。"
+  @spec display_label(String.t() | nil) :: String.t()
+  def display_label(kind) when is_binary(kind) do
+    Map.get(@display_labels, kind, kind)
+  end
+
+  def display_label(_kind), do: display_label(@default_kind)
+
   @doc false
   @spec known_tokens() :: MapSet.t(String.t())
   def known_tokens do

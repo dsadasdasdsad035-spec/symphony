@@ -24,6 +24,12 @@ defmodule SymphonyElixir.AgentKindTest do
     assert Kind.resolve(issue(%{labels: ["severity:2"]})) == "codex"
   end
 
+  test "display_label 供看板展示" do
+    assert Kind.display_label("cursor_cli") == "Cursor CLI"
+    assert Kind.display_label("zcode") == "ZCode"
+    assert Kind.display_label(nil) == "Codex"
+  end
+
   test "善治 keywords 指定 CLI" do
     assert Kind.resolve(issue(%{attributes: %{"keywords" => "cursor cli"}})) == "cursor_cli"
     assert Kind.resolve(issue(%{attributes: %{"keywords" => "zcode"}})) == "zcode"

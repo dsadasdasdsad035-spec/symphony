@@ -219,7 +219,8 @@ defmodule SymphonyElixir.Orchestrator do
         issue_url: running_entry.issue.url,
         delay_type: :continuation,
         worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path)
+        workspace_path: Map.get(running_entry, :workspace_path),
+        agent_kind: Map.get(running_entry, :agent_kind)
       })
     end
   end
@@ -250,7 +251,8 @@ defmodule SymphonyElixir.Orchestrator do
       issue_url: running_entry.issue.url,
       error: "agent exited: #{inspect(reason)}",
       worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
+      workspace_path: Map.get(running_entry, :workspace_path),
+      agent_kind: Map.get(running_entry, :agent_kind)
     })
   end
 
@@ -631,7 +633,10 @@ defmodule SymphonyElixir.Orchestrator do
         |> schedule_issue_retry(issue_id, next_attempt, %{
           identifier: identifier,
           issue_url: running_entry.issue.url,
-          error: "stalled for #{elapsed_ms}ms without codex activity"
+          error: "stalled for #{elapsed_ms}ms without codex activity",
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path),
+          agent_kind: Map.get(running_entry, :agent_kind)
         })
       end
     else
@@ -762,6 +767,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue: Map.get(running_entry, :issue),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
+      agent_kind: Map.get(running_entry, :agent_kind),
       session_id: running_entry_session_id(running_entry),
       error: error,
       blocked_at: DateTime.utc_now(),
@@ -1012,7 +1018,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: issue.identifier,
           issue_url: issue.url,
           error: "failed to spawn agent: #{inspect(reason)}",
-          worker_host: worker_host
+          worker_host: worker_host,
+          agent_kind: agent_kind
         })
     end
   end
@@ -1058,6 +1065,7 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    agent_kind = pick_retry_agent_kind(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1081,7 +1089,8 @@ defmodule SymphonyElixir.Orchestrator do
             issue_url: issue_url,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            agent_kind: agent_kind
           })
     }
   end
@@ -1286,6 +1295,10 @@ defmodule SymphonyElixir.Orchestrator do
     metadata[:workspace_path] || Map.get(previous_retry, :workspace_path)
   end
 
+  defp pick_retry_agent_kind(previous_retry, metadata) do
+    metadata[:agent_kind] || Map.get(previous_retry, :agent_kind)
+  end
+
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
 
   defp maybe_put_runtime_value(running_entry, key, value) when is_map(running_entry) do
@@ -1447,6 +1460,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: metadata.identifier,
           issue_url: metadata.issue.url,
           state: metadata.issue.state,
+          agent_kind: snapshot_agent_kind(metadata),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
@@ -1473,6 +1487,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry, :identifier),
           issue_url: Map.get(retry, :issue_url),
           error: Map.get(retry, :error),
+          agent_kind: Map.get(retry, :agent_kind),
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path)
         }
@@ -1486,6 +1501,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(metadata, :identifier),
           issue_url: blocked_issue_url(metadata),
           state: blocked_issue_state(metadata),
+          agent_kind: Map.get(metadata, :agent_kind),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: Map.get(metadata, :session_id),
@@ -1532,6 +1548,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp blocked_issue_url(%{issue: %Issue{url: url}}), do: url
   defp blocked_issue_url(_metadata), do: nil
+
+  defp snapshot_agent_kind(%{agent_kind: kind}) when is_binary(kind) and kind != "", do: kind
+
+  defp snapshot_agent_kind(%{issue: %Issue{} = issue}) do
+    {kind, _} = Agent.impl_for(issue)
+    kind
+  end
+
+  defp snapshot_agent_kind(_metadata), do: AgentKind.default_kind()
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)

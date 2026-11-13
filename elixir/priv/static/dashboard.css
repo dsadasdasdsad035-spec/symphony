@@ -371,6 +371,13 @@ pre,
   color: var(--accent-ink);
 }
 
+.state-badge-agent {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #3730a3;
+  white-space: nowrap;
+}
+
 .state-badge-warning {
   background: #fff7e8;
   border-color: #f1d8a6;
