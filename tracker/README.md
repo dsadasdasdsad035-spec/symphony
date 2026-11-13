@@ -64,7 +64,7 @@ npm run start
 - `POST /api/v1/issues/:id/comments` — 评论
 - `GET /api/symphony/issues?project=comic&label=symphony` — Symphony 兼容列表
 
-默认项目 `comic`（名称 `ai-comic-drama`）。新工单建议打上标签 `symphony` 以便编排器拾取。
+默认项目 `comic`（名称 `ai-comic-drama`）。新工单默认标签 `symphony, cursor cli`（派发 + Cursor CLI）；至少需含 `symphony` 才会被编排器拾取。
 
 ## Symphony `WORKFLOW.md`
 

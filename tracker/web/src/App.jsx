@@ -135,7 +135,7 @@ export default function App() {
   const [newIssue, setNewIssue] = useState({
     title: "",
     description: "",
-    labels: "symphony",
+    labels: "symphony, cursor cli",
     state: "backlog",
   });
   const [dragIssueId, setDragIssueId] = useState(null);
@@ -320,7 +320,7 @@ export default function App() {
         labels: labelsFromInput(newIssue.labels),
       });
       setCreating(false);
-      setNewIssue({ title: "", description: "", labels: "symphony", state: "backlog" });
+      setNewIssue({ title: "", description: "", labels: "symphony, cursor cli", state: "backlog" });
       await loadBoard();
     } catch (err) {
       setError(err.message);
