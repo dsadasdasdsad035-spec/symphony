@@ -1,0 +1,32 @@
+# 看板入口。集群里的命名约定是 <服务>.dev.sie.iidp.cn（参照 mcphub.dev.sie.iidp.cn）。
+#
+# Symphony 的看板没有登录鉴权，只有只读状态展示与操作按钮，
+# 因此这里加了 basic-auth：不设的话任何能访问内网的人都能指挥 Agent 干活。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: symphony
+  labels:
+    app.kubernetes.io/name: symphony
+  annotations:
+    # 看板是 Phoenix LiveView，靠 WebSocket 推增量；nginx-ingress 默认支持
+    # upgrade，但超时默认只有 60s，长连接会被掐断，这里放宽。
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: symphony-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Symphony"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: symphony.dev.sie.iidp.cn
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: symphony
+                port:
+                  name: http

@@ -1,0 +1,25 @@
+# Symphony 线上部署（Kubernetes / Rancher）
+#
+# 集群：rancher-gky.sie.iidp.cn（RKE2 v1.32，节点 amd64）
+# 命名空间：symphony
+#
+# 这里只有静态资源。凭证类资源由 apply.sh 生成，不落仓库：
+#   Secret symphony-env          ← deploy/.env 的运行期变量
+#   Secret symphony-basic-auth   ← 看板登录
+#   ConfigMap symphony-workflow  ← deploy/WORKFLOW.md
+#
+# WORKFLOW.md 之所以不放进这里，是因为 kustomize 不允许引用 kustomization
+# 目录之外的文件；由脚本创建同名的 ConfigMap，热加载行为完全一样。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: symphony
+
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  # 临时直连入口（IP:30567）。对外域名打通后可以删掉这一行 + service-nodeport.yaml
+  - service-nodeport.yaml
+  - ingress.yaml

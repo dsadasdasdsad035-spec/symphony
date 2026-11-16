@@ -1,0 +1,54 @@
+name: symphony
+
+services:
+  symphony:
+    image: ${IMAGE_NAME:-symphony-agent}:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: runtime
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        CODEX_VERSION: ${CODEX_VERSION:-latest}
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
+        ZCODE_CLI_PKG: ${ZCODE_CLI_PKG-https://github.com/xhqing/zcode-cli/releases/download/v3.8.1-32/zcode-cli-3.8.1-32.tgz}
+        CURSOR_INSTALL_URL: ${CURSOR_INSTALL_URL:-https://cursor.com/install}
+        SHANZHI_MCP_REPO: ${SHANZHI_MCP_REPO-http://192.168.175.55:9888/mijiuye/shanzhi_mcp.git}
+        SHANZHI_MCP_REF: ${SHANZHI_MCP_REF:-master}
+    container_name: ${CONTAINER_NAME:-symphony}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOME: /home/symphony
+      TZ: ${TZ:-Asia/Shanghai}
+      SYMPHONY_PORT: "${SYMPHONY_PORT:-4567}"
+      SYMPHONY_WORKSPACE_ROOT: /data/workspaces
+      LOGS_ROOT: /data
+      WORKFLOW_PATH: /app/WORKFLOW.md
+    ports:
+      - "${SYMPHONY_PORT:-4567}:${SYMPHONY_PORT:-4567}"
+    volumes:
+      # 工作区、日志、Agent 会话历史都落在 data/，删容器不丢
+      - ./data:/data
+      # 工作流热加载：改完保存即生效，无需重建镜像
+      - ./WORKFLOW.md:/app/WORKFLOW.md:ro
+      # 各 CLI 的登录态（宿主机上先登录一次，再拷进这些目录）
+      - ./auth/codex:/home/symphony/.codex
+      - ./auth/claude:/home/symphony/.claude
+      - ./auth/cursor:/home/symphony/.cursor
+      - ./auth/zcode:/home/symphony/.zcode
+      # 需要走 SSH 克隆仓库时挂载
+      - ./auth/ssh:/home/symphony/.ssh:ro
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${SYMPHONY_PORT:-4567}/api/v1/state >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

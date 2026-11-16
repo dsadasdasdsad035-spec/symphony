@@ -164,7 +164,7 @@ defmodule SymphonyElixir.Shanzhi.AdapterTest do
     assert issue.assignee_id == "陈昌稳"
     assert issue.dispatchable
     assert issue.description =~ "复现步骤"
-    assert issue.url == "http://sf.sieiot.com/cooperation/bug?id=83204"
+    assert issue.url == "http://sf.sieiot.com/cooperation/bug?shareId=83204"
     assert "severity:2" in issue.labels
     assert "env:test" in issue.labels
     assert issue.attributes == %{"keywords" => ""}

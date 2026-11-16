@@ -487,15 +487,51 @@ defmodule SymphonyElixir.Agent.ClaudeCli do
     Enum.join(argv, " ") <> " < /dev/null"
   end
 
-  # --mcp-config 支持内联 JSON，因此不需要写任何文件
-  defp mcp_config_json(nil), do: nil
-
+  # --mcp-config 支持内联 JSON，因此不需要写任何文件。
+  #
+  # 除了 Symphony 自己的 HTTP 端点，还允许部署时挂载额外 MCP 服务
+  # （`SYMPHONY_EXTRA_MCP_SERVERS`，JSON 对象，key 是服务名）。
+  # 典型用途是把善治 Bug MCP 这类 stdio 服务接进来：凭证留在服务自己的
+  # 配置文件里，这里只传配置路径，agent 进程环境里不出现账号密码。
   defp mcp_config_json(url) do
-    Jason.encode!(%{
-      "mcpServers" => %{
-        @mcp_server_name => %{"type" => "http", "url" => url}
-      }
-    })
+    case mcp_servers(url) do
+      servers when map_size(servers) == 0 -> nil
+      servers -> Jason.encode!(%{"mcpServers" => servers})
+    end
+  end
+
+  defp mcp_servers(url) do
+    base =
+      if is_binary(url) and url != "" do
+        %{@mcp_server_name => %{"type" => "http", "url" => url}}
+      else
+        %{}
+      end
+
+    Map.merge(base, extra_mcp_servers())
+  end
+
+  defp extra_mcp_servers do
+    case System.get_env("SYMPHONY_EXTRA_MCP_SERVERS") do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" ->
+            %{}
+
+          json ->
+            case Jason.decode(json) do
+              {:ok, servers} when is_map(servers) ->
+                servers
+
+              _ ->
+                Logger.warning("SYMPHONY_EXTRA_MCP_SERVERS 不是合法的 JSON 对象，已忽略")
+                %{}
+            end
+        end
+
+      _ ->
+        %{}
+    end
   end
 
   defp claude_model do

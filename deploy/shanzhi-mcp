@@ -1,0 +1,17 @@
+#!/bin/sh
+# 善治（SF）Bug 协作 MCP 服务启动器。
+#
+# 传输方式是 stdio：Agent CLI 按需把本脚本拉成子进程，通过标准输入输出
+# 走 MCP 协议。凭证不在环境变量里，而是由 entrypoint 生成到
+# ~/.config/shanzhi-mcp/config.json（600），这里只负责把路径交给服务。
+set -eu
+
+APP_DIR="${SHANZHI_MCP_APP:-/opt/shanzhi-mcp/app}"
+PYTHON="${SHANZHI_MCP_PYTHON:-/opt/shanzhi-mcp/venv/bin/python}"
+
+if [ ! -x "${PYTHON}" ] || [ ! -f "${APP_DIR}/server.py" ]; then
+  echo "善治 MCP 未安装（缺少 ${PYTHON} 或 ${APP_DIR}/server.py）；检查构建参数 SHANZHI_MCP_REPO" >&2
+  exit 127
+fi
+
+exec "${PYTHON}" "${APP_DIR}/server.py" "$@"

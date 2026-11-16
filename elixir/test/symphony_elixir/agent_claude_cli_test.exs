@@ -301,6 +301,76 @@ defmodule SymphonyElixir.AgentClaudeCliTest do
     refute File.read!(args_log) =~ "--strict-mcp-config"
   end
 
+  test "SYMPHONY_EXTRA_MCP_SERVERS 里的外部 MCP 会合并进 --mcp-config", %{
+    test_root: test_root,
+    workspace_root: workspace_root,
+    workspace: workspace
+  } do
+    args_log = Path.join(test_root, "args-extramcp.log")
+    stub = write_stub_cli(test_root, args_log)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "claude_cli",
+      agent_claude_command: stub,
+      server_port: 4599
+    )
+
+    extra = %{
+      "shanzhi_bug" => %{
+        "type" => "stdio",
+        "command" => "/opt/shanzhi-mcp/bin/shanzhi-mcp",
+        "env" => %{"SF_MCP_CONFIG" => "/home/symphony/.config/shanzhi-mcp/config.json"}
+      }
+    }
+
+    System.put_env("SYMPHONY_EXTRA_MCP_SERVERS", Jason.encode!(extra))
+    on_exit(fn -> System.delete_env("SYMPHONY_EXTRA_MCP_SERVERS") end)
+
+    assert {:ok, session} = ClaudeCli.start_session(workspace, [])
+    on_exit(fn -> ClaudeCli.stop_session(session) end)
+
+    issue = %Issue{id: "issue-7", identifier: "MT-7", title: "外部 MCP", state: "In Progress"}
+    assert {:ok, _} = ClaudeCli.run_turn(session, "任务", issue, on_message: fn _ -> :ok end)
+
+    logged = File.read!(args_log) |> String.split("\n", trim: true) |> List.first()
+
+    # Symphony 自己的 HTTP 端点与外部 stdio 服务同时存在
+    assert logged =~ "http://127.0.0.1:4599/mcp"
+    assert logged =~ "shanzhi_bug"
+    assert logged =~ "/opt/shanzhi-mcp/bin/shanzhi-mcp"
+    assert logged =~ "--strict-mcp-config"
+  end
+
+  test "SYMPHONY_EXTRA_MCP_SERVERS 非法 JSON 时忽略，不影响 Symphony 自身的 MCP", %{
+    test_root: test_root,
+    workspace_root: workspace_root,
+    workspace: workspace
+  } do
+    args_log = Path.join(test_root, "args-badextramcp.log")
+    stub = write_stub_cli(test_root, args_log)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      agent_kind: "claude_cli",
+      agent_claude_command: stub,
+      server_port: 4599
+    )
+
+    System.put_env("SYMPHONY_EXTRA_MCP_SERVERS", "not-json")
+    on_exit(fn -> System.delete_env("SYMPHONY_EXTRA_MCP_SERVERS") end)
+
+    assert {:ok, session} = ClaudeCli.start_session(workspace, [])
+    on_exit(fn -> ClaudeCli.stop_session(session) end)
+
+    issue = %Issue{id: "issue-8", identifier: "MT-8", title: "坏 MCP", state: "In Progress"}
+    assert {:ok, _} = ClaudeCli.run_turn(session, "任务", issue, on_message: fn _ -> :ok end)
+
+    logged = File.read!(args_log) |> String.split("\n", trim: true) |> List.first()
+    assert logged =~ "http://127.0.0.1:4599/mcp"
+    refute logged =~ "not-json"
+  end
+
   test "claude_model 配置会传给 --model，留空则不传", %{
     test_root: test_root,
     workspace_root: workspace_root,

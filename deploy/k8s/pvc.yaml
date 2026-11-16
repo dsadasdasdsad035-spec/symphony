@@ -1,0 +1,19 @@
+# 工作区 + 日志 + Agent 会话历史都落在 /data。
+#
+# 每个 Bug 一个工作区，浅克隆约 41MB，但 Agent 会执行 Maven 构建，
+# 单个工作区会涨到 800MB 左右；并发 3 + 排队，30Gi 是留了很大余量的值。
+# 用 longhorn-retain：删掉 PVC 不删数据，避免误操作把工作区连带处理进度一起抹掉。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: symphony-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-retain
+  resources:
+    requests:
+      # 单个工作区跑完一轮 Java 构建后约 4GB，100Gi 可容纳约 25 个工作区。
+      # 首次部署时给的是 30Gi，实测 3 个工作区就占了 12GB，已扩容。
+      # 只能往大了改（PVC 不支持缩容）。
+      storage: 100Gi

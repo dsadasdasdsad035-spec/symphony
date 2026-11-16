@@ -1,0 +1,25 @@
+# 临时直连入口：给同样在内网的机器用 IP:端口 打开看板，
+# 不依赖公司网关对 symphony.dev.sie.iidp.cn 的解析。
+#
+# 注意：basic-auth 是在 Ingress 上做的，走 NodePort 会绕过它。
+# 只适合临时用；对外域名打通后建议删掉这个 Service。
+apiVersion: v1
+kind: Service
+metadata:
+  name: symphony-nodeport
+  labels:
+    app.kubernetes.io/name: symphony
+    app.kubernetes.io/component: temporary-access
+spec:
+  type: NodePort
+  # 用默认的 Cluster：单副本只落在一个节点，Local 会让其余节点直接拒连，
+  # 而这里的目的就是「随便挑一个节点 IP 都能打开」。
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: symphony
+  ports:
+    - name: http
+      port: 4567
+      targetPort: http
+      nodePort: 30567
+      protocol: TCP

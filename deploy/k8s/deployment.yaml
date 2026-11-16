@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: symphony
+  labels:
+    app.kubernetes.io/name: symphony
+    app.kubernetes.io/component: orchestrator
+spec:
+  # Symphony 内部维护每个 Bug 的工作区与轮次状态，跑多副本会互相抢同一批 Bug，
+  # 因此固定单副本；RWO 的 PVC 也只允许挂到一个 Pod。
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: symphony
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: symphony
+        app.kubernetes.io/component: orchestrator
+    spec:
+      # 善治的 API 与内网 GitLab 都要走集群出口，不做额外调度限制；
+      # 给 Agent 的 Maven 构建留足时间优雅退出。
+      terminationGracePeriodSeconds: 120
+      imagePullSecrets:
+        - name: harbor-regcred
+      securityContext:
+        # 卷里的工作区要能被 uid 1000 写；用 fsGroup 让 Longhorn 卷组可写。
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: symphony
+          image: harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v1
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # 直接以 1000 运行：Claude Code 的 --dangerously-skip-permissions 拒绝 root，
+            # entrypoint 检测到非 root 会跳过 chown/gosu 分支。
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+          envFrom:
+            # 由 apply.sh 从 deploy/.env 生成：网关密钥、善治账号、GitLab 凭据等
+            - secretRef:
+                name: symphony-env
+          env:
+            # 下面几项覆盖 .env 里的本机取值（.env 的 SYMPHONY_PORT 是宿主端口，
+            # 线上固定 4567，由 Service/Ingress 对外暴露）
+            - name: HOME
+              value: /home/symphony
+            - name: SYMPHONY_PORT
+              value: "4567"
+            - name: SYMPHONY_WORKSPACE_ROOT
+              value: /data/workspaces
+            - name: LOGS_ROOT
+              value: /data
+            - name: WORKFLOW_PATH
+              value: /config/WORKFLOW.md
+            - name: TZ
+              value: Asia/Shanghai
+            # Agent 建 MR / 拉评审意见走 GitLab REST API，认 GITLAB_TOKEN；
+            # secret 里存的是 GIT_TOKEN（git 推送用），这里映射一份。
+            - name: GITLAB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: symphony-env
+                  key: GIT_TOKEN
+          ports:
+            - name: http
+              containerPort: 4567
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            # ConfigMap 以目录方式挂载（而非 subPath）：subPath 的内容不会随
+            # ConfigMap 更新而刷新，而 Symphony 靠热加载 WORKFLOW.md 改派发规则。
+            - name: workflow
+              mountPath: /config
+              readOnly: true
+          startupProbe:
+            # escript 启动 + entrypoint 生成各 CLI 配置，冷启动约 20~40 秒；
+            # 首次拉 1.6GB 镜像另有 image pull 时间，不占用这个预算。
+            httpGet:
+              path: /api/v1/state
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            # 探测器要有耐心：三个 Agent 同时跑 Maven 时，BEAM 调度器会被
+            # 暂时挤占，健康检查可能几百毫秒无响应。误判的代价是整个
+            # 编排器重启、在跑的轮次全丢，所以给到 5 分钟容忍（6×30s×10s）。
+            httpGet:
+              path: /api/v1/state
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 10
+          readinessProbe:
+            httpGet:
+              path: /api/v1/state
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 1500m
+              memory: 4Gi
+            limits:
+              # 三个 Agent 并发跑 Maven 时内存会冲高，留 10Gi 上限避免 OOMKill 抖动
+              cpu: 4
+              memory: 10Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: symphony-data
+        - name: workflow
+          configMap:
+            name: symphony-workflow
+            items:
+              - key: WORKFLOW.md
+                path: WORKFLOW.md

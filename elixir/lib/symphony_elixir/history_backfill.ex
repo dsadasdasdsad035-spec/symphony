@@ -21,6 +21,8 @@ defmodule SymphonyElixir.HistoryBackfill do
   # 工具名里出现这些词，说明这一步是在收尾（把任务标记为已解决/已完成）。
   @resolve_markers ["resolve", "complete", "close", "mark_done"]
   @trace_limit 40
+  # 善治前端默认地址；部署时可用 SF_WEB_URL 覆盖。
+  @default_web_url "http://sf.sieiot.com"
 
   @doc """
   扫描并重建。
@@ -172,10 +174,24 @@ defmodule SymphonyElixir.HistoryBackfill do
   end
 
   # 善治的 Bug 链接规则；其他来源只填标识符，链接留空避免给错地址。
+  # 前端用 shareId 定位 Bug，域名取 SF_WEB_URL（与 ShanZhi.Client 保持一致）。
   defp issue_url(identifier) do
     case Regex.run(~r/^SF-(\d+)$/, identifier) do
-      [_, number] -> "http://sf.sieot.com/bug/#{number}"
+      [_, number] -> "#{web_url()}/cooperation/bug?shareId=#{number}"
       _ -> nil
+    end
+  end
+
+  defp web_url do
+    case System.get_env("SF_WEB_URL") do
+      url when is_binary(url) ->
+        case String.trim(url) do
+          "" -> @default_web_url
+          trimmed -> String.trim_trailing(trimmed, "/")
+        end
+
+      _ ->
+        @default_web_url
     end
   end
 

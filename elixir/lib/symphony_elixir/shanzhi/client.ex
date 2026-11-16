@@ -856,8 +856,11 @@ defmodule SymphonyElixir.Shanzhi.Client do
 
   defp issue_url(%{web_url: nil}, _bug_id), do: nil
 
+  # 善治前端的 Bug 详情页用 shareId 定位（不是 id）：
+  #   http://sf.sieiot.com/cooperation/bug?shareId=83192
+  # 域名由 SF_WEB_URL 提供，这里只拼路径与参数，避免把域名写死在代码里。
   defp issue_url(%{web_url: web_url}, bug_id),
-    do: "#{String.trim_trailing(web_url, "/")}/cooperation/bug?id=#{bug_id}"
+    do: "#{String.trim_trailing(web_url, "/")}/cooperation/bug?shareId=#{bug_id}"
 
   defp keyword_field(%{"keywords" => keywords}) when is_binary(keywords), do: keywords
   defp keyword_field(%{}), do: ""

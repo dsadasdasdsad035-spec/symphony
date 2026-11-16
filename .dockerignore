@@ -1,0 +1,28 @@
+# 构建上下文：仓库根目录（只取 elixir/ 与 deploy/ 里的必要文件）
+.git
+.gitignore
+.idea
+.vscode
+.agents
+.codex
+.cursor
+.github
+openspec
+tracker
+deploy/.env
+deploy/data
+deploy/auth
+
+# Elixir 构建产物与本地依赖（镜像内会重新拉取、编译）
+elixir/_build
+elixir/deps
+elixir/cover
+elixir/doc
+elixir/log
+elixir/logs
+elixir/bin
+elixir/burrito_out
+elixir/dist
+elixir/erl_crash.dump
+elixir/.elixir_ls
+elixir/.fetch
