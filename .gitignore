@@ -1,0 +1,24 @@
+# macOS 系统文件
+.DS_Store
+
+# 编辑器/IDE 本地配置
+.idea/
+.vscode/
+.elixir_ls/
+
+# Elixir 构建产物
+elixir/_build/
+elixir/deps/
+elixir/cover/
+elixir/doc/
+elixir/log/
+elixir/logs/
+elixir/bin/
+elixir/burrito_out/
+elixir/dist/
+elixir/erl_crash.dump
+elixir/.fetch
+
+# 本地环境与凭证
+.env
+.env.local
