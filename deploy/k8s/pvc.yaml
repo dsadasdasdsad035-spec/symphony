@@ -13,7 +13,11 @@ spec:
   storageClassName: longhorn-retain
   resources:
     requests:
-      # 单个工作区跑完一轮 Java 构建后约 4GB，100Gi 可容纳约 25 个工作区。
-      # 首次部署时给的是 30Gi，实测 3 个工作区就占了 12GB，已扩容。
-      # 只能往大了改（PVC 不支持缩容）。
-      storage: 100Gi
+      # 单个工作区跑完一轮 Java 构建后约 4GB，250Gi 可容纳约 60 个工作区。
+      # 扩容史：30Gi → 100Gi（实测 3 个工作区占 11GB）→ 250Gi。
+      # 上限受 Longhorn 单盘 589.5G 限制：卷是 2 副本，两份完整拷贝分别落在
+      # 两台机器上，所以卷容量不可能超过最小副本盘的物理容量。
+      # 当前副本位于 master3(489G 可用) 与 worker1(270G 可用)，
+      # 250Gi 已接近 worker1 的安全边界；再往上必须先迁移副本或给节点加盘。
+      # 只能往大了改（PVC 不支持缩容），改小会被 API 直接拒绝。
+      storage: 250Gi
