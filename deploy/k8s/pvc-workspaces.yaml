@@ -1,0 +1,23 @@
+# 第二个工作区卷：突破单卷上限用的。
+#
+# 为什么需要它：Longhorn 的卷始终绑定在单块盘上，副本不能跨盘拼接，
+# 所以单卷容量上限 = min(副本所在各盘可用容量)。本集群每节点只有一块
+# 589.5G 的盘，导致 symphony-data 扩到 250Gi 就到顶了。
+# 再加一个同规格的卷挂在 /data2，工作区总量就能到约 500G。
+#
+# 注意：这是两个彼此独立的卷，不是一个大卷。单个目录写满不会自动溢出到另一个，
+# 只是总量变多。当前用 SYMPHONY_WORKSPACE_ROOT=/data2/workspaces 把工作区
+# 放在新卷上，symphony-data 继续承载日志与会话历史。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: symphony-workspaces
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-retain
+  resources:
+    requests:
+      # 与 symphony-data 同规格。单卷不能超过最小副本盘的可用容量，
+      # 250Gi 是当前集群的安全值；要更大必须先在 VM 层给节点加盘。
+      storage: 250Gi

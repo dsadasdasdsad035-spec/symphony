@@ -32,7 +32,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: symphony
-          image: harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v1
+          image: harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v2
           imagePullPolicy: IfNotPresent
           securityContext:
             # 直接以 1000 运行：Claude Code 的 --dangerously-skip-permissions 拒绝 root，
@@ -52,7 +52,9 @@ spec:
             - name: SYMPHONY_PORT
               value: "4567"
             - name: SYMPHONY_WORKSPACE_ROOT
-              value: /data/workspaces
+              # 工作区放在独立的第二个卷上：单卷受 Longhorn 单盘容量限制，
+              # 不拆卷就扩不到 500G。日志与会话历史仍留在 /data。
+              value: /data2/workspaces
             - name: LOGS_ROOT
               value: /data
             - name: WORKFLOW_PATH
@@ -73,6 +75,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            # 工作区卷：与 /data 分开，两块卷叠加才有约 500G 可用
+            - name: workspaces
+              mountPath: /data2
             # ConfigMap 以目录方式挂载（而非 subPath）：subPath 的内容不会随
             # ConfigMap 更新而刷新，而 Symphony 靠热加载 WORKFLOW.md 改派发规则。
             - name: workflow
@@ -116,6 +121,9 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: symphony-data
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: symphony-workspaces
         - name: workflow
           configMap:
             name: symphony-workflow

@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${ENV_FILE:-${HERE}/../.env}"
 NS="${NS:-symphony}"
 DOMAIN="${DOMAIN:-symphony.dev.sie.iidp.cn}"
-IMAGE="${IMAGE:-harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v1}"
+IMAGE="${IMAGE:-harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v2}"
 PULL_SECRET_SOURCE="${PULL_SECRET_SOURCE:-authmcp/harbor-regcred}"
 
 log() { printf '[deploy] %s\n' "$*"; }

@@ -18,6 +18,8 @@ namespace: symphony
 resources:
   - namespace.yaml
   - pvc.yaml
+  # 第二个工作区卷：单卷受 Longhorn 单盘 589.5G 限制，用两卷叠加把总量做到约 500G
+  - pvc-workspaces.yaml
   - deployment.yaml
   - service.yaml
   # 临时直连入口（IP:30567）。对外域名打通后可以删掉这一行 + service-nodeport.yaml
