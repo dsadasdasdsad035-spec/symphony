@@ -157,6 +157,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:claude_model, :string, default: nil)
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
+      # 续接上一轮线程前先压缩上下文，避免历史随轮数无限膨胀。
+      # 0 表示不压缩（续接时直接用完整历史）。
+      field(:compact_after_turns, :integer, default: 40)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
     end
@@ -175,6 +178,7 @@ defmodule SymphonyElixir.Config.Schema do
           :claude_model,
           :max_concurrent_agents,
           :max_turns,
+          :compact_after_turns,
           :max_retry_backoff_ms,
           :max_concurrent_agents_by_state
         ],
@@ -183,6 +187,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_inclusion(:kind, ["codex", "cursor_cli", "zcode", "claude_cli"])
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
+      |> validate_number(:compact_after_turns, greater_than_or_equal_to: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)

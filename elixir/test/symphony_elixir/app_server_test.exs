@@ -1628,4 +1628,171 @@ defmodule SymphonyElixir.AppServerTest do
       File.rm_rf(test_root)
     end
   end
+
+  describe "跨 run 续接线程" do
+    setup do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-app-server-resume-#{System.unique_integer([:positive])}"
+        )
+
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-9001")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-resume.trace")
+      previous_trace = System.get_env("SYMP_TEST_RESUME_TRACE")
+
+      File.mkdir_p!(workspace)
+      System.put_env("SYMP_TEST_RESUME_TRACE", trace_file)
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_RESUME_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_RESUME_TRACE")
+        end
+
+        File.rm_rf(test_root)
+      end)
+
+      {:ok, workspace_root: workspace_root, workspace: workspace, codex_binary: codex_binary, trace_file: trace_file}
+    end
+
+    test "有上一轮线程时发 thread/resume，而不是从零 thread/start", %{
+      workspace_root: workspace_root,
+      workspace: workspace,
+      codex_binary: codex_binary,
+      trace_file: trace_file
+    } do
+      write_fake_codex!(
+        codex_binary,
+        ~s({"id":4,"result":{"id":"thread-resumed-1","cwd":"#{workspace}"}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-should-not-be-used"}}})
+      )
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} =
+               AppServer.start_session(workspace, resume_thread_id: "thread-resumed-1", resume_turns: 0)
+
+      AppServer.stop_session(session)
+
+      assert session.thread_id == "thread-resumed-1"
+
+      methods = traced_methods(trace_file)
+      assert "thread/resume" in methods
+      refute "thread/start" in methods
+
+      resume_payload = traced_payload(trace_file, "thread/resume")
+      assert get_in(resume_payload, ["params", "threadId"]) == "thread-resumed-1"
+      # macOS 的 /var 是指向 /private/var 的符号链接，这里比尾部路径更稳。
+      resumed_cwd = get_in(resume_payload, ["params", "cwd"])
+      assert is_binary(resumed_cwd)
+      assert String.ends_with?(resumed_cwd, "workspaces/MT-9001")
+    end
+
+    test "续接失败时回退到 thread/start，不能把整轮跑废", %{
+      workspace_root: workspace_root,
+      workspace: workspace,
+      codex_binary: codex_binary,
+      trace_file: trace_file
+    } do
+      write_fake_codex!(
+        codex_binary,
+        ~s({"id":4,"error":{"code":-32600,"message":"thread not found"}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-fresh-1"}}})
+      )
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} =
+               AppServer.start_session(workspace, resume_thread_id: "thread-gone", resume_turns: 0)
+
+      AppServer.stop_session(session)
+
+      assert session.thread_id == "thread-fresh-1"
+
+      methods = traced_methods(trace_file)
+      assert "thread/resume" in methods
+      assert "thread/start" in methods
+    end
+
+    test "thread/start 的嵌套形状能取出 thread_id" do
+      assert {:ok, "thread-start-id"} =
+               AppServer.extract_thread_id_for_test(%{"thread" => %{"id" => "thread-start-id"}})
+    end
+
+    test "thread/resume 的扁平形状能取出 thread_id" do
+      assert {:ok, "thread-resume-id"} =
+               AppServer.extract_thread_id_for_test(%{"id" => "thread-resume-id"})
+    end
+
+    test "响应缺 id 时沿用预期值，不让续接把整轮卡死" do
+      assert {:ok, "expected-id"} =
+               AppServer.extract_thread_id_for_test(%{"unexpected" => true}, "expected-id")
+    end
+  end
+
+  # 伪造 codex app-server：按 method 回应，并把收到的请求记进 trace 文件。
+  # 不能用行号驱动——initialize 后面还跟着一个 initialized 通知，行号很脆。
+  defp write_fake_codex!(codex_binary, resume_response, start_response) do
+    File.write!(codex_binary, """
+    #!/bin/sh
+    trace_file="${SYMP_TEST_RESUME_TRACE:-/tmp/codex-resume.trace}"
+
+    while IFS= read -r line; do
+      printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+      case "$line" in
+        *'"method":"thread/resume"'*)
+          printf '%s\\n' '#{resume_response}'
+          ;;
+        *'"method":"thread/start"'*)
+          printf '%s\\n' '#{start_response}'
+          ;;
+        *'"method":"initialize"'*)
+          printf '%s\\n' '{"id":1,"result":{}}'
+          ;;
+        *)
+          ;;
+      esac
+    done
+    """)
+
+    File.chmod!(codex_binary, 0o755)
+  end
+
+  defp traced_methods(trace_file) do
+    trace_file
+    |> traced_payloads()
+    |> Enum.map(& &1["method"])
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp traced_payload(trace_file, method) do
+    trace_file
+    |> traced_payloads()
+    |> Enum.find(&(&1["method"] == method))
+  end
+
+  defp traced_payloads(trace_file) do
+    trace_file
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.flat_map(fn line ->
+      with "JSON:" <> json <- line,
+           {:ok, payload} when is_map(payload) <- Jason.decode(json) do
+        [payload]
+      else
+        _ -> []
+      end
+    end)
+  end
 end

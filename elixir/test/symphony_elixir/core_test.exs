@@ -34,6 +34,15 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
 
+    # 续接前的上下文压缩阈值：默认 40，0 表示不压缩
+    assert Config.settings!().agent.compact_after_turns == 40
+    write_workflow_file!(Workflow.workflow_file_path(), compact_after_turns: 12)
+    assert Config.settings!().agent.compact_after_turns == 12
+
+    write_workflow_file!(Workflow.workflow_file_path(), compact_after_turns: -1)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.compact_after_turns"
+
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "tracker.active_states"

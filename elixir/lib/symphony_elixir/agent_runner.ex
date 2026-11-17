@@ -5,7 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Agent
-  alias SymphonyElixir.{Config, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, PromptBuilder, ThreadStore, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @type worker_host :: String.t() | nil
@@ -91,7 +91,23 @@ defmodule SymphonyElixir.AgentRunner do
     agent = Keyword.get_lazy(opts, :agent_impl, &Agent.impl/0)
     opts = Keyword.put(opts, :agent_impl, agent)
 
-    with {:ok, session} <- agent.start_session(workspace, worker_host: worker_host) do
+    # 上一次派发留下的线程。跑满 max_turns 后约 1 秒就会重派，续接它能把上一轮
+    # 的排查结论、排除过的假设、已定位的路径全带回来，而不是从零重来。
+    previous = previous_thread(issue)
+    resume_turns = if previous, do: previous.turns, else: 0
+    opts = Keyword.put(opts, :resume_turns, resume_turns)
+
+    session_opts = [
+      worker_host: worker_host,
+      resume_thread_id: previous && previous.thread_id,
+      resume_turns: resume_turns,
+      compact_after_turns: Config.settings!().agent.compact_after_turns
+    ]
+
+    with {:ok, session} <- agent.start_session(workspace, session_opts) do
+      # 若续接时压缩了上下文，会话会给出归零后的计数；否则沿用已累计轮数。
+      opts = Keyword.put(opts, :resume_turns, Map.get(session, :turns_base, resume_turns))
+
       try do
         do_run_codex_turns(
           session,
@@ -109,6 +125,33 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  defp previous_thread(%Issue{identifier: identifier}) when is_binary(identifier) and identifier != "" do
+    ThreadStore.get(identifier)
+  end
+
+  defp previous_thread(_issue), do: nil
+
+  # 每完成一轮就记下线程与累计轮数：派发被中途打断也不会丢，下一轮照旧能续接。
+  defp remember_thread(%Issue{identifier: identifier}, turn_session, opts, turn_number)
+       when is_binary(identifier) and identifier != "" do
+    thread_id = thread_id_from(turn_session)
+
+    if is_binary(thread_id) and thread_id != "" do
+      base_turns = Keyword.get(opts, :resume_turns, 0)
+      ThreadStore.put(identifier, thread_id, base_turns + turn_number)
+    end
+
+    :ok
+  end
+
+  defp remember_thread(_issue, _turn_session, _opts, _turn_number), do: :ok
+
+  defp thread_id_from(turn_session) when is_map(turn_session) do
+    Map.get(turn_session, :thread_id) || Map.get(turn_session, :session_id)
+  end
+
+  defp thread_id_from(_turn_session), do: nil
+
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     agent = Keyword.fetch!(opts, :agent_impl)
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
@@ -121,6 +164,9 @@ defmodule SymphonyElixir.AgentRunner do
              on_message: codex_message_handler(codex_update_recipient, issue)
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+
+      # 先落盘线程再判断是否继续：即使这一轮就是最后一轮，下一轮派发也能续接。
+      remember_thread(issue, turn_session, opts, turn_number)
 
       case continue_with_issue?(issue, issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->

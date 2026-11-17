@@ -58,3 +58,78 @@
 - **情况一补了「环境产物验证」硬闸门（2b）**：由 SF-83343 暴露——提交在跟踪分支上，
   但环境 `/apps/modules/` 里的 jar 仍是修复前构建，Bug 照样复现。现在要求用 `javap`
   反编译确认改动确实在产物里，并比对 Pod 启动时间与 jar 时间，产物不含修复就不许 resolve。
+- **补回 workpad 机制（跨轮记忆）**（2026-11-17）。由 SF-83323/83324 暴露：两单各被派发
+  24 次、跑满 667 个 turn、累计 1026 万 input token，产出为 0（工作区停在 master、从未建
+  修复分支）。根因是上游 Symphony 的三个前提在我们这套部署里断了一个：
+  1. **撞 `max_turns` 被当成正常完成**——`agent_runner` 返回 `:ok` → 任务 `:normal` 退出 →
+     orchestration 走 `delay_type: :continuation`，延迟固定 `@continuation_retry_delay_ms`
+     （1 秒）重派。实测重派间隔 1.08~1.35 秒。且调用方传字面量 `attempt=1`，永不升级、
+     不退避、不封顶。**这段逻辑与上游 `openai/symphony@be10a1b` 逐字一致，不是本地改坏。**
+  2. **上游靠 workpad 兜住**：其 `elixir/WORKFLOW.md` 要求「用一条持久的 Linear 评论当
+     进度的唯一真相」，续跑时先读回。我们迁到善治后没建等价物，导致
+     `agent_runner.ex:162` 那句 "Resume from ... workpad state" 指向不存在的机制，
+     每次重派都是全新线程 + 全新 prompt + 从零开始（实测每个会话首个动作都是重读
+     Bug 历史 / `cat AGENTS.md`）。
+  3. **任务重量超上游假设**：上游提示词是「单仓库任务」；我们是跨仓库（Vue
+     `sie-iidp-ai-agent-web` + Java `de-skill`/`de-post-dev`）、3.6G 聚合工作区、7 个子模块。
+     且 `turn` 记的是 assistant 回复次数，实测 30 turn 仅产出 25 次工具调用。
+  另注 **状态出口受渠道约束**：善治 `激活/激活中/未解决 → active`，`已解决/待验证 →
+  resolved`。`active_states` 只有 `active`，所以唯一出口是 Agent 自己调
+  `shanzhi_resolve_bug`；`confirm_bug` 刻意禁用，没有中间态可先退出。Linear 里 Agent 能
+  随手拖状态脱离 active，善治不行——**这也是渠道相关的放大因素**。
+  修复：`deploy/WORKFLOW.md` 新增「开工第一步：读写 workpad」章节，**双写分层**：
+  - **善治备注 = 跨环境兜底 + 人工可见**。写之前实测确认：`remark_bug` 实际是
+    「取详情 → 改 comment → `update-bug` 全量提交」（善治无独立备注接口），备注只进
+    操作历史，且 `get_bug` 返回的 48 个字段**不含 comment**——读回必须走
+    `shanzhi_bug_history`。因此只在 5 个关键节点写（诊断完成 / 定位到根因 / 代码改完 /
+    验证发版结果 / resolve 前），每次带 `WORKPAD` 标记便于检索。
+    不每阶段写的原因：① 每写一次留一条「编辑了」，会把人工可见历史刷成噪音；
+    ② 全量提交在极端并发下有覆盖他人改动的风险。
+  - **`out/symphony-workpad.md` = 高频底稿**。`out/` 已 gitignore、在工作区持久卷上、
+    不污染 `git status`，每阶段更新，记录已确认事实 / 已排除假设 / 当前进度 / 下一步 /
+    关键路径。工作区可能被 `after_create` 钩子或失败清理重建，所以开工顺序定为
+    **先读善治历史、再读文件**。
+  已验证热加载生效：SF-83324 的新会话工具调用顺序为
+  `shanzhi_bug_history` → `cat out/symphony-workpad.md` → 继续干活，
+  且不再重复 `cat AGENTS.md`（说明确实接着上一轮干，而非从零开始）。
+  **仍未处理**：`max_turns` 仍是 30；撞上限仍按 continuation 1 秒重派（workpad 让每轮
+  变成增量推进，但循环本身没有封顶）。后续若单轮仍不够，需再评估调大 `max_turns`
+  或在上游代码里加计次封顶。
+
+## 补充：跨 run 续接会话（thread/resume）
+
+**问题**：上面的 workpad 只解决「知道进度」，不解决「上下文没了」。此前每次
+`start_session` 都新建会话——Codex 发 `thread/start`，其余 CLI 的 `session_id` 初始化
+为 nil——于是每轮仍要从零重读提示词与仓库结构。
+
+**关键发现（推翻了前期结论）**：Codex app-server 协议**本来就有** `thread/resume`，
+支持按 `threadId` / history / path 三种方式从磁盘载回线程。在容器内用旧 thread_id
+实测：`thread/resume` 返回成功并载回 **30 轮历史**，`cwd`、`approvalPolicy` 一并恢复。
+同理 claude / cursor / zcode 的 `--resume <session_id>` 也一直存在，只是 Symphony
+从未把上一轮的 id 传回去。
+
+**改动**：
+1. 新增 `lib/symphony_elixir/thread_store.ex`：把 `工单项 identifier → {thread_id, turns}`
+   持久化到 `~/.config/symphony/threads.json`（可用 `SYMPHONY_THREADS_FILE` 覆盖）。
+   与 Codex 会话文件同在容器 overlay 层，Pod 重建时一起消失，避免留下指向已失效
+   会话的陈旧映射。
+2. `codex/app_server.ex`：`start_session/2` 新增 `resume_thread_id`、`resume_turns`、
+   `compact_after_turns`；有 id 时发 `thread/resume`，**任何失败都回退 `thread/start`**
+   ——续接只是省时间，不能挡住整轮运行。响应形状兼容 `%{"thread" => %{"id" => ...}}`
+   与扁平 `%{"id" => ...}` 两种。
+3. 续接会带上整条线程历史，故超过 `agent.compact_after_turns`（默认 40，部署配 30）
+   时先发 `thread/compact/start`；压缩成功则轮数计数归零，否则沿用已累计值。
+4. `claude_cli` / `cursor_cli` / `zcode`：`resume_thread_id` 作为 `session_id` 种子写进
+   ETS，使 `--resume` 生效。
+5. `agent_runner.ex`：派发前读映射并传入；**每完成一轮就回写**（`turns` 为累计值），
+   保证中途被打断也不丢。
+6. 配置：`agent.compact_after_turns`；`deploy/WORKFLOW.md` 设为 30 与 `max_turns` 对齐，
+   即「每跑满一轮、下次续接压缩一次」，上下文始终有界。
+
+**测试**：`thread_store_test.exs`（持久化/脏数据/删除）；`app_server_test.exs` 用伪造
+`codex app-server` 断言「有 id 走 resume 不发 start」「resume 报错则回退 start」，
+以及两种响应形状解析。修复了测试污染真实 `~/.config/symphony` 的问题——
+`TestSupport` 现在为每个用例设独立 `SYMPHONY_THREADS_FILE` 并清空映射。
+
+**两层防御的分工**：同 Pod 内（max_turns 循环）靠 resume 保住完整上下文；Pod 重建
+（发版）靠 workpad + 善治备注。两者互补，不是替代关系。

@@ -38,10 +38,18 @@ defmodule SymphonyElixir.TestSupport do
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         stop_default_http_server()
 
+        # 线程映射也是全局状态（应用实例被所有用例共享）。不隔离的话，后一个用例
+        # 会去「续接」前一个用例留下的假线程，导致 response_timeout；
+        # 而且默认路径指向开发者真实的 ~/.config/symphony，绝不能写进去。
+        previous_threads_file = System.get_env("SYMPHONY_THREADS_FILE")
+        System.put_env("SYMPHONY_THREADS_FILE", Path.join(workflow_root, "threads.json"))
+        SymphonyElixir.ThreadStore.reset_for_test()
+
         on_exit(fn ->
           Application.delete_env(:symphony_elixir, :workflow_file_path)
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+          restore_env("SYMPHONY_THREADS_FILE", previous_threads_file)
           File.rm_rf(workflow_root)
         end)
 
@@ -111,6 +119,7 @@ defmodule SymphonyElixir.TestSupport do
           agent_claude_command: "claude",
           agent_claude_model: nil,
           max_turns: 20,
+          compact_after_turns: 40,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
           codex_command: "codex app-server",
@@ -155,6 +164,7 @@ defmodule SymphonyElixir.TestSupport do
     agent_claude_command = Keyword.get(config, :agent_claude_command)
     agent_claude_model = Keyword.get(config, :agent_claude_model)
     max_turns = Keyword.get(config, :max_turns)
+    compact_after_turns = Keyword.get(config, :compact_after_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     codex_command = Keyword.get(config, :codex_command)
@@ -202,6 +212,7 @@ defmodule SymphonyElixir.TestSupport do
         agent_claude_model && "  claude_model: #{yaml_value(agent_claude_model)}",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
+        "  compact_after_turns: #{yaml_value(compact_after_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "codex:",

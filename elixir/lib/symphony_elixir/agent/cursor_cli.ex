@@ -44,7 +44,8 @@ defmodule SymphonyElixir.Agent.CursorCli do
       _ ->
         with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace) do
           state = :ets.new(__MODULE__, [:set])
-          :ets.insert(state, {:chat_id, nil})
+          # 上一轮留下的会话 id（若有）作为续接种子，避免每轮从零开始。
+          :ets.insert(state, {:chat_id, resume_seed(opts)})
           :ets.insert(state, {:turn_count, 0})
           mcp_url = ensure_mcp_config(expanded_workspace)
 
@@ -61,6 +62,16 @@ defmodule SymphonyElixir.Agent.CursorCli do
         end
     end
   end
+
+  # 续接种子：只接受非空二进制，其他一律当作「没有上一轮」。
+  defp resume_seed(opts) when is_list(opts) do
+    case Keyword.get(opts, :resume_thread_id) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp resume_seed(_opts), do: nil
 
   @impl true
   @spec run_turn(map(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}

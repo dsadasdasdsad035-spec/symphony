@@ -9,6 +9,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
+  # 跨 run 续接会话用，与上面的 id 保持互不干扰
+  @thread_resume_id 4
+  @thread_compact_id 5
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @type session :: %{
@@ -38,6 +41,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
+    resume_thread_id = Keyword.get(opts, :resume_thread_id)
+    resume_turns = Keyword.get(opts, :resume_turns, 0)
+    compact_after_turns = Keyword.get(opts, :compact_after_turns, 0)
     dynamic_tool_binding = DynamicTool.bind()
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
@@ -45,8 +51,16 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
-           {:ok, thread_id} <-
-             do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding) do
+           {:ok, thread_id, compacted?} <-
+             do_start_session(
+               port,
+               expanded_workspace,
+               session_policies,
+               dynamic_tool_binding,
+               resume_thread_id,
+               resume_turns,
+               compact_after_turns
+             ) do
         {:ok,
          %{
            port: port,
@@ -56,6 +70,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            thread_sandbox: session_policies.thread_sandbox,
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
            thread_id: thread_id,
+           # 压缩成功后历史已被折叠，轮数计数归零，否则下一轮会立刻再次触发压缩。
+           turns_base: if(compacted?, do: 0, else: resume_turns),
            workspace: expanded_workspace,
            worker_host: worker_host,
            dynamic_tool_binding: dynamic_tool_binding
@@ -304,10 +320,198 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace, remote: true)
   end
 
-  defp do_start_session(port, workspace, session_policies, dynamic_tool_binding) do
+  defp do_start_session(
+         port,
+         workspace,
+         session_policies,
+         dynamic_tool_binding,
+         resume_thread_id,
+         resume_turns,
+         compact_after_turns
+       ) do
     case send_initialize(port) do
-      :ok -> start_thread(port, workspace, session_policies, dynamic_tool_binding)
+      :ok ->
+        with {:ok, thread_id} <-
+               resume_or_start_thread(
+                 port,
+                 workspace,
+                 session_policies,
+                 dynamic_tool_binding,
+                 resume_thread_id
+               ),
+             # 续接会带上整条线程的历史，轮数越多上下文越大；超阈值先压缩再开工。
+             {:ok, compacted?} <-
+               compact_before_run(port, thread_id, resume_turns, compact_after_turns) do
+          {:ok, thread_id, compacted?}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp compact_before_run(port, thread_id, resume_turns, threshold) do
+    case maybe_compact_thread(port, thread_id, resume_turns, threshold) do
+      :compacted -> {:ok, true}
+      :skipped -> {:ok, false}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # 有上次的线程就续接；失败一律回退新建——续接只是省时间，不能挡住整轮运行。
+  defp resume_or_start_thread(port, workspace, session_policies, dynamic_tool_binding, resume_thread_id)
+       when is_binary(resume_thread_id) and resume_thread_id != "" do
+    case resume_thread(port, workspace, session_policies, resume_thread_id) do
+      {:ok, thread_id} ->
+        Logger.info("续接既有 codex 线程 thread_id=#{thread_id}")
+        {:ok, thread_id}
+
+      {:error, reason} ->
+        Logger.warning("续接线程失败，回退为新建会话 thread_id=#{resume_thread_id} reason=#{inspect(reason)}")
+
+        start_thread(port, workspace, session_policies, dynamic_tool_binding)
+    end
+  end
+
+  defp resume_or_start_thread(port, workspace, session_policies, dynamic_tool_binding, _resume_thread_id) do
+    start_thread(port, workspace, session_policies, dynamic_tool_binding)
+  end
+
+  defp resume_thread(
+         port,
+         workspace,
+         %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
+         thread_id
+       ) do
+    send_message(port, %{
+      "method" => "thread/resume",
+      "id" => @thread_resume_id,
+      "params" => %{
+        "threadId" => thread_id,
+        "approvalPolicy" => approval_policy,
+        "sandbox" => thread_sandbox,
+        "cwd" => workspace
+      }
+    })
+
+    case await_response(port, @thread_resume_id) do
+      {:ok, payload} -> extract_thread_id(payload, thread_id)
+      other -> other
+    end
+  end
+
+  # thread/start 返回 %{"thread" => %{"id" => ...}}，thread/resume 直接返回线程对象；
+  # 两种形状都兼容，避免依赖某个 codex 版本的具体封装。
+  defp extract_thread_id(%{"thread" => %{"id" => thread_id}}, _fallback) when is_binary(thread_id),
+    do: {:ok, thread_id}
+
+  defp extract_thread_id(%{"id" => thread_id}, _fallback) when is_binary(thread_id), do: {:ok, thread_id}
+
+  defp extract_thread_id(payload, fallback) do
+    Logger.warning("线程响应缺少 id，沿用预期 thread_id=#{fallback} payload=#{inspect(payload, limit: 5)}")
+    {:ok, fallback}
+  end
+
+  @doc false
+  # 仅测试用：thread/start 与 thread/resume 的响应形状不同，这里锁住两种都要能取到 id。
+  @spec extract_thread_id_for_test(term(), String.t() | nil) :: {:ok, String.t()}
+  def extract_thread_id_for_test(payload, fallback \\ nil), do: extract_thread_id(payload, fallback)
+
+  defp maybe_compact_thread(port, thread_id, resume_turns, threshold)
+       when is_integer(resume_turns) and is_integer(threshold) and threshold > 0 and
+              resume_turns >= threshold do
+    send_message(port, %{
+      "method" => "thread/compact/start",
+      "id" => @thread_compact_id,
+      "params" => %{"threadId" => thread_id}
+    })
+
+    case await_response(port, @thread_compact_id) do
+      {:ok, _payload} ->
+        # 这个响应只代表「压缩已开始」，压缩本身是个后台 turn。必须等它真正结束
+        # 再发 turn/start，否则会撞 ActiveTurnNotSteerable(turn_kind: Compact)。
+        case await_compaction(port, thread_id) do
+          :ok ->
+            Logger.info("续接前已压缩上下文 thread_id=#{thread_id} turns=#{resume_turns}")
+            :compacted
+
+          {:error, reason} ->
+            # 压缩可能仍在后台跑，此时发 turn/start 必然失败。让整轮失败交给
+            # 调度器重试更划算：下一轮续接时线程大概率已经压好了。
+            Logger.warning(
+              "压缩上下文未在限定时间内完成 thread_id=#{thread_id} reason=#{inspect(reason)}"
+            )
+
+            {:error, {:compaction_incomplete, reason}}
+        end
+
+      {:error, reason} ->
+        # 连「开始压缩」都没成功，线程仍是空闲的，可以照常跑，只是上下文大一些。
+        Logger.warning(
+          "启动上下文压缩失败，沿用完整历史 thread_id=#{thread_id} reason=#{inspect(reason)}"
+        )
+
+        :skipped
+    end
+  end
+
+  defp maybe_compact_thread(_port, _thread_id, _resume_turns, _threshold), do: :skipped
+
+  # 等压缩结束。`thread/compacted` 是专用通知；压缩 turn 结束时也会发
+  # `turn/completed`，两者任一到达都说明线程已空闲（此刻只可能有压缩这一个 turn）。
+  defp await_compaction(port, thread_id) do
+    # 压缩比普通读响应慢得多，用 turn 级超时并压到 10 分钟上限，避免无限挂住。
+    timeout_ms = min(Config.settings!().codex.turn_timeout_ms, 600_000)
+    await_compaction(port, thread_id, timeout_ms, "")
+  end
+
+  defp await_compaction(_port, _thread_id, timeout_ms, _pending) when timeout_ms <= 0 do
+    {:error, :compact_timeout}
+  end
+
+  defp await_compaction(port, thread_id, timeout_ms, pending) do
+    started_at = System.monotonic_time(:millisecond)
+
+    receive do
+      {^port, {:data, {:eol, chunk}}} ->
+        line = pending <> to_string(chunk)
+
+        if compaction_finished?(line, thread_id) do
+          :ok
+        else
+          await_compaction(port, thread_id, remaining_ms(timeout_ms, started_at), "")
+        end
+
+      {^port, {:data, {:noeol, chunk}}} ->
+        await_compaction(
+          port,
+          thread_id,
+          remaining_ms(timeout_ms, started_at),
+          pending <> to_string(chunk)
+        )
+
+      {^port, {:exit_status, status}} ->
+        {:error, {:port_exit, status}}
+    after
+      timeout_ms ->
+        {:error, :compact_timeout}
+    end
+  end
+
+  defp remaining_ms(timeout_ms, started_at) do
+    timeout_ms - (System.monotonic_time(:millisecond) - started_at)
+  end
+
+  defp compaction_finished?(line, thread_id) do
+    case Jason.decode(line) do
+      {:ok, %{"method" => "thread/compacted"} = payload} ->
+        get_in(payload, ["params", "threadId"]) in [nil, thread_id]
+
+      {:ok, %{"method" => "turn/completed"}} ->
+        true
+
+      _ ->
+        false
     end
   end
 
