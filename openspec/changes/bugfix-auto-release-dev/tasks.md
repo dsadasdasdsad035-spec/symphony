@@ -173,9 +173,48 @@ error: {:response_error, %{"code" => -32603,
 
 SF-83324 的 assistant 消息只有「我先读善治历史和本地 workpad」「确认是首次处理，我会先看
 截图」这类**只表态、不调工具**的话，于是每轮 1 秒结束，30 轮 40 秒烧完。
-清掉线程映射、重启 Pod 全新开始后仍然是 123 轮 / 4 次工具——**说明与 resume 无关，
-也不只是这一条线程的问题，而是该任务 + `local-glm5.3` 的组合让模型不出工具调用**。
 
-结论：resume + compact 解决了「每轮从零重来」的浪费，但**无法解决模型空转**。
-若该工单仍要跑通，需要换更强的模型（或改该单的处理路径）；单纯调大 `max_turns`、
-继续调续接策略都只是延长空转。
+当时曾怀疑是「任务 + 模型组合」导致模型不出工具调用，**这个判断是错的**。
+
+### 真因：`local-glm5.3` 不支持图像输入
+
+把两个工单的工具调用序列对齐后，发现**完全相同、而且断在同一处**：
+
+```
+shanzhi_bug_history → exec_command ×2 → view_image → ✗ 此后 190 轮不再调工具
+```
+
+Bug 描述带截图，`WORKFLOW.md` 要求「先看截图」，agent 照做，`view_image` 提交 base64
+图片，网关直接回：
+
+```json
+{"error":{"message":"local-glm5.3 is not a multimodal model","code":400}}
+```
+
+该 400 之后整条线程进入「只输出表态、不再调用工具」的状态。所以 **resume + compact 没有
+跑歪，是撞上了模型能力缺口**——上下文接得再好，也救不了一个读不了图的模型。
+
+实测各模型能力（`/v1/models` 只有 13 个自建模型，无 Claude/GPT）：
+
+| 模型 | 工具调用 | 多模态 | 上下文 |
+|---|---|---|---|
+| `local-glm5.3` | ✅ | ❌ **400** | 208k |
+| `local-glm5.2-fp8` | ✅ | ❌ | — |
+| `local-glm5.3-flash` | ✅ | ✅ | 208k |
+| `local-qwen3.5` | ✅ | ✅ | 208k |
+
+**处理**：`AGENT_MODEL` / `AGENT_LITE_MODEL` 改为 `local-glm5.3-flash`（同属 GLM 生态且
+支持视觉）。代价是 flash 属轻量档，复杂 Bug 推理可能不及 5.3；若观察到定位质量下降，可改回
+`local-glm5.3` 并同时去掉 `WORKFLOW.md` 里「先看截图」这一步。
+
+**切换后验证**（同一 turn 内 52 次工具调用，`view_image` 之后继续干活）：
+
+```
+shanzhi_bug_history → exec_command ×3 → view_image ×2 → exec_command ×7 → ...
+```
+
+- SF-83323：workpad 57 行，代码与测试已改完并推送，MR opened / can_be_merged
+- SF-83324：workpad 24 → 29 行，进度由「定位中」推进到「已定位根因，准备修复」
+
+**注意**：模型只能全局切换（`.env` 的 `AGENT_MODEL`）；工单 `keywords` 只能切 CLI 类型
+（codex / claude / cursor / zcode），不能逐单换模型。
