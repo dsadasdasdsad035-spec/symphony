@@ -136,13 +136,15 @@ defmodule SymphonyElixir.Shanzhi.AdapterTest do
     assert {:ok, []} = Adapter.fetch_issues_by_ids(["83204"])
     assert_receive {:shanzhi_ids, ["83204"]}
 
+    # 「确认」是人工评审动作，不能出现在 agent 可调用的工具里。
     assert [
              %{"name" => "shanzhi_get_bug"},
              %{"name" => "shanzhi_bug_history"},
-             %{"name" => "shanzhi_confirm_bug"},
              %{"name" => "shanzhi_remark_bug"},
              %{"name" => "shanzhi_resolve_bug"}
            ] = Adapter.agent_tool_specs()
+
+    refute "shanzhi_confirm_bug" in Enum.map(Adapter.agent_tool_specs(), & &1["name"])
 
     assert Adapter.active_states() == ["active"]
     assert Adapter.terminal_states() == ["closed"]
@@ -361,6 +363,8 @@ defmodule SymphonyElixir.Shanzhi.AdapterTest do
     assert {:ok, []} = Client.fetch_issues_by_ids(["83321"], settings)
   end
 
+  # 仅保留给人工/运维使用：agent 侧已不再暴露 shanzhi_confirm_bug，
+  # 但「确认」本身仍要有可编程入口，避免将来接编排层时又把它塞回 agent。
   test "confirm_bug sends assignedTo because the API silently ignores it otherwise" do
     settings = tracker_settings()
 
@@ -381,6 +385,104 @@ defmodule SymphonyElixir.Shanzhi.AdapterTest do
     assert confirm[:json]["params"]["confirmed"] == true
     assert confirm[:json]["params"]["assignedTo"] == "13800000000"
     assert confirm[:json]["params"]["comment"] == "<p>已复现</p>"
+  end
+
+  test "plan filter sends planList and drops bugs outside the selected iterations" do
+    settings = tracker_settings(%{"plans" => ["2793"], "dep_id" => unique_dep_id()})
+
+    FakeHttp.push([
+      login_ok(),
+      list_ok([
+        raw_bug(83_401, "active", steps: "<p>目标迭代</p>", plan: 2793, plan_name: "2026年11月迭代"),
+        raw_bug(83_402, "active", steps: "<p>别的迭代</p>", plan: 2538, plan_name: "引擎Q4项目")
+      ])
+    ])
+
+    assert {:ok, [%Issue{} = issue]} = Client.fetch_issues_by_states(["active"], settings)
+    assert issue.identifier == "SF-83401"
+
+    assert find_request(@list_url)[:json]["params"]["planList"] == [2793]
+  end
+
+  test "plan filter accepts multiple iterations from a comma separated setting" do
+    settings = tracker_settings(%{"plans" => "2793, 2538，2415", "dep_id" => unique_dep_id()})
+
+    FakeHttp.push([
+      login_ok(),
+      list_ok([
+        raw_bug(83_411, "active", steps: "a", plan: 2793, plan_name: "迭代A"),
+        raw_bug(83_412, "active", steps: "b", plan: 2538, plan_name: "迭代B"),
+        raw_bug(83_413, "active", steps: "c", plan: 2415, plan_name: "迭代C"),
+        raw_bug(83_414, "active", steps: "d", plan: 0, plan_name: nil)
+      ])
+    ])
+
+    assert {:ok, issues} = Client.fetch_issues_by_states(["active"], settings)
+    assert Enum.map(issues, & &1.identifier) == ["SF-83411", "SF-83412", "SF-83413"]
+
+    assert find_request(@list_url)[:json]["params"]["planList"] == [2793, 2538, 2415]
+  end
+
+  test "plan filter resolves iteration names to ids before querying" do
+    settings = tracker_settings(%{"plans" => ["2026年11月迭代"], "dep_id" => unique_dep_id()})
+
+    FakeHttp.push([
+      login_ok(),
+      # 第一次：不带 planList，用来反查「迭代名 -> 迭代 ID」
+      list_ok([raw_bug(83_421, "active", steps: "x", plan: 2793, plan_name: "2026年11月迭代")]),
+      # 第二次：真正带过滤的查询
+      list_ok([raw_bug(83_421, "active", steps: "x", plan: 2793, plan_name: "2026年11月迭代")])
+    ])
+
+    assert {:ok, [%Issue{} = issue]} = Client.fetch_issues_by_states(["active"], settings)
+    assert issue.identifier == "SF-83421"
+
+    list_params =
+      FakeHttp.requests()
+      |> Enum.filter(&(&1[:url] == @list_url))
+      |> Enum.map(& &1[:json]["params"]["planList"])
+
+    assert list_params == [nil, [2793]]
+  end
+
+  test "plan filter fails loudly on an unknown iteration name" do
+    settings = tracker_settings(%{"plans" => ["查无此迭代"], "dep_id" => unique_dep_id()})
+
+    FakeHttp.push([
+      login_ok(),
+      list_ok([raw_bug(83_431, "active", steps: "x", plan: 2793, plan_name: "2026年11月迭代")])
+    ])
+
+    assert {:error, {:shanzhi_unknown_plan, "查无此迭代"}} =
+             Client.fetch_issues_by_states(["active"], settings)
+  end
+
+  test "fetch_issues_by_ids stops bugs that moved out of the selected iterations" do
+    settings = tracker_settings(%{"plans" => ["2793"], "dep_id" => unique_dep_id()})
+
+    FakeHttp.push([
+      login_ok(),
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "code" => 800,
+           "data" => raw_bug(83_441, "active", steps: "x", plan: 2538, plan_name: "引擎Q4项目")
+         }
+       }}
+    ])
+
+    assert {:ok, []} = Client.fetch_issues_by_ids(["83441"], settings)
+  end
+
+  test "empty plans list falls back to the SF_PLANS environment variable" do
+    previous = System.get_env("SF_PLANS")
+    System.put_env("SF_PLANS", "2793，2538")
+    on_exit(fn -> restore_env("SF_PLANS", previous) end)
+
+    settings = tracker_settings(%{"plans" => [], "dep_id" => unique_dep_id()})
+    assert {:ok, resolved} = Client.settings(settings)
+    assert resolved.plans == ["2793", "2538"]
   end
 
   test "confirmed? accepts the shapes the API returns" do
@@ -472,6 +574,18 @@ defmodule SymphonyElixir.Shanzhi.AdapterTest do
       case Keyword.get(opts, :steps) do
         nil -> base
         steps -> Map.put(base, "steps", steps)
+      end
+
+    base =
+      case Keyword.get(opts, :plan) do
+        nil -> base
+        plan -> Map.put(base, "plan", plan)
+      end
+
+    base =
+      case Keyword.get(opts, :plan_name) do
+        nil -> base
+        plan_name -> Map.put(base, "planName", plan_name)
       end
 
     case Keyword.get(opts, :confirmed, :default) do

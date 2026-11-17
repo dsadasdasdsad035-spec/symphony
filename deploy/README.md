@@ -109,7 +109,7 @@ zcode 通道还有一层兼容：社区 `zcode-cli` 不认识适配器的 `--out
 
 | 来源 | 传输 | 工具 |
 |---|---|---|
-| Symphony `/mcp` | HTTP | `shanzhi_get_bug`、`shanzhi_bug_history`、`shanzhi_confirm_bug`、`shanzhi_remark_bug`、`shanzhi_resolve_bug` |
+| Symphony `/mcp` | HTTP | `shanzhi_get_bug`、`shanzhi_bug_history`、`shanzhi_remark_bug`、`shanzhi_resolve_bug` |
 | 独立 MCP 服务 | stdio | `find_bugs`、`get_bug`、`get_bug_history`、`list_members`、`list_projects`（`create_bug` 等写操作默认不开放） |
 
 配置方式（`.env`）：

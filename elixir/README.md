@@ -333,11 +333,12 @@ tracker:
 - **Agent CLI routing:** put the CLI name in the Bug **keywords** field (`codex`, `cursor`,
   `cursor cli`, `zcode`, `claude`, etc.). Leave blank to use Codex. Linear and Jira use the
   same token names on **issue labels** (`SymphonyElixir.Agent.Kind`).
-- Tools: `shanzhi_get_bug`, `shanzhi_bug_history`, `shanzhi_confirm_bug`, `shanzhi_remark_bug`,
-  and `shanzhi_resolve_bug` run host-side with the cached login token. `shanzhi_confirm_bug` exists
-  so an agent can record that it genuinely reproduced a bug; its description tells the agent to use
-  `shanzhi_remark_bug` instead when it cannot reproduce one. Creating and deleting bugs are
-  intentionally not exposed. `SF_PASSWORD` and configured password variables are stripped from the
+- Tools: `shanzhi_get_bug`, `shanzhi_bug_history`, `shanzhi_remark_bug`, and
+  `shanzhi_resolve_bug` run host-side with the cached login token.
+  Bug **confirmation is a human review action and is deliberately not exposed** to the agent:
+  `require_confirmed` only means something as a human gate, and giving the agent
+  `shanzhi_confirm_bug` would let it confirm its own backlog. Creating and deleting bugs are
+  intentionally not exposed either. `SF_PASSWORD` and configured password variables are stripped from the
   agent child, and the token is cached in process memory only (no `~/.sf-mcp/auth.json` on disk).
 
 ## Web dashboard

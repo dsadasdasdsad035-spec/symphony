@@ -290,6 +290,21 @@ EOF
   SYMPHONY_EXTRA_MCP_SERVERS="$(printf '{"shanzhi_bug":{"type":"stdio","command":"%s","args":[],"env":{"SF_MCP_CONFIG":"%s"}}}' \
     "${SHANZHI_MCP_LAUNCHER}" "${file}")"
 
+  # claude 没有 codex 那种 enabled_tools 白名单，只能反过来禁用写操作，
+  # 否则 codex 只读、claude 全量，换 agent 就等于换了一套权限。
+  # 工具名形态是 mcp__<服务名>__<工具名>。
+  #
+  # 其中 confirm_bug 最关键：善治的「确认」是人工评审门槛，
+  # agent 一旦能自我确认，require_confirmed 就形同虚设。
+  if [ "${SHANZHI_MCP_TOOLS:-readonly}" != "all" ]; then
+    export SYMPHONY_MCP_DISALLOWED_TOOLS="\
+mcp__shanzhi_bug__confirm_bug \
+mcp__shanzhi_bug__create_bug \
+mcp__shanzhi_bug__resolve_bug \
+mcp__shanzhi_bug__remark_bug \
+mcp__shanzhi_bug__bug_login"
+  fi
+
   local scope="只读"
   [ "${SHANZHI_MCP_TOOLS:-readonly}" = "all" ] && scope="全部"
   log "善治 MCP 已注册到 codex / claude（工具范围: ${scope}，配置 ${file}）"

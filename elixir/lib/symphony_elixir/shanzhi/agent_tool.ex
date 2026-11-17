@@ -2,8 +2,12 @@ defmodule SymphonyElixir.Shanzhi.AgentTool do
   @moduledoc """
   暴露给 agent 的善治 Bug 工具。
 
-  只开放读详情、读历史、加备注、解决这四件事：善治的「提 Bug」和「删除」
-  都是人工动作，自动化里不该出现，所以刻意不提供。
+  只开放读详情、读历史、加备注、解决这四件事：善治的「提 Bug」「删除」和
+  「确认」都是人工动作，自动化里不该出现，所以刻意不提供。
+
+  尤其不能开放「确认」：`confirmed` 是善治里的人工评审结论，决定这条 Bug
+  该不该开工。一旦 agent 能自我确认，`require_confirmed` 这道门槛就形同虚设，
+  agent 可以把自己想做的单子放进来。需要确认的 Bug 一律留给人工。
 
   凭证只存在 Symphony 进程内，agent 拿不到账号密码。
   """
@@ -12,7 +16,6 @@ defmodule SymphonyElixir.Shanzhi.AgentTool do
 
   @get_bug "shanzhi_get_bug"
   @bug_history "shanzhi_bug_history"
-  @confirm_bug "shanzhi_confirm_bug"
   @remark_bug "shanzhi_remark_bug"
   @resolve_bug "shanzhi_resolve_bug"
 
@@ -40,26 +43,6 @@ defmodule SymphonyElixir.Shanzhi.AgentTool do
         "name" => @bug_history,
         "description" => "读取善治 Bug 的操作历史，包含每次状态变更与备注。",
         "inputSchema" => @bug_id_schema
-      },
-      %{
-        "name" => @confirm_bug,
-        "description" =>
-          "确认善治 Bug，把「确认」字段置为是。未确认的 Bug 不会被 Symphony 派发，除非用它确认。\n\n" <>
-            "注意：确认代表「这确实是有效缺陷」，属于评审动作。只有当你在真实环境复现成功、" <>
-            "确信不是误报时才调用；如果无法复现或判断是误报，改用 shanzhi_remark_bug 说明原因，不要确认。",
-        "inputSchema" => %{
-          "type" => "object",
-          "additionalProperties" => false,
-          "required" => ["bug_id"],
-          "properties" => %{
-            "bug_id" => %{"type" => ["integer", "string"], "description" => "善治 Bug 编号。"},
-            "assignee" => %{
-              "type" => "string",
-              "description" => "确认后指派给谁（姓名或手机号）。留空沿用 Bug 当前指派人。"
-            },
-            "comment" => %{"type" => "string", "description" => "确认备注，例如复现结论，支持 HTML。"}
-          }
-        }
       },
       %{
         "name" => @remark_bug,
@@ -102,20 +85,6 @@ defmodule SymphonyElixir.Shanzhi.AgentTool do
 
       @bug_history ->
         run(opts, fn settings, args -> Client.bug_history(arg(args, "bug_id"), settings) end, arguments)
-
-      @confirm_bug ->
-        run(
-          opts,
-          fn settings, args ->
-            Client.confirm_bug(
-              arg(args, "bug_id"),
-              arg(args, "assignee"),
-              to_string(arg(args, "comment") || ""),
-              settings
-            )
-          end,
-          arguments
-        )
 
       @remark_bug ->
         run(

@@ -17,12 +17,26 @@ tracker:
     dep_id: $SF_DEP_ID
     web_url: $SF_WEB_URL
     # 只看指派给某人的 Bug（姓名或手机号）；留空则派发产品下所有人的 Bug。
-    # 当前由 .env 的 SF_ASSIGNEE=米久业 限定为只看他自己的单。
+    # 当前 .env 里 SF_ASSIGNEE 留空，即不限指派人，只按迭代和确认状态筛。
     # 与下面 require_confirmed 是「与」关系：0 交集就派发 0 单。
     assignee: $SF_ASSIGNEE
-    # 只派发「已确认」的 Bug（善治的 confirmed 布尔字段）。未确认的留给人工评审。
-    # 注意：米久业名下 5 个激活 Bug 目前 confirmed 全为 false，
-    # 所以现在是「0 派发」状态，等他确认后自动开工。
+    # 只看指定迭代（善治 Bug 的「所属迭代」），可以写多个，是「或」关系。
+    # 元素可以是迭代 ID，也可以是迭代名称（中文名直接写，不需要转义）。
+    # 与 assignee、require_confirmed 是「与」关系。
+    #
+    # 例：
+    #   plans: ["2026年11月迭代（数字员工运行时引擎）"]
+    #   plans: [2793, 2538]
+    #   plans: ["2026年11月迭代（数字员工运行时引擎）", "引擎Q4项目"]
+    #
+    # 留空或不写 = 不限迭代。也可以用 .env 的 SF_PLANS 传逗号分隔的值覆盖，
+    # 例如 SF_PLANS="2793,2538"。
+    plans: []
+    # 只派发「已确认」的 Bug（善治的 confirmed 布尔字段）。
+    #
+    # 这是人工评审门槛，必须保持 true：善治新建 Bug 的 confirmed 默认是 false，
+    # 只有人在善治里确认过才会派发。agent 侧已刻意不提供确认工具（见 AgentTool），
+    # 否则 agent 能自我确认，这道门槛就形同虚设。
     require_confirmed: true
   # 善治原生状态：激活 -> 开工；已解决 -> 停下等人工评审（保留工作区）；已关闭 -> 收尾
   active_states: ["active"]
@@ -188,8 +202,8 @@ Symphony 只会把「状态=激活 且 确认=是」的 Bug 派给你，说明�
 - 定位不到、或看代码发现根本不是 Bug（已被别的改动修好、属于需求变更、环境/数据问题）：
   **不要臆造改动**。用 `shanzhi_remark_bug` 写清楚判断依据和结论，然后直接结束本次任务。
   这种 Bug 由人工决定后续状态，**不要调用 `shanzhi_resolve_bug`**。
-- `shanzhi_confirm_bug` 是评审动作（把「确认」置为是），只有真实环境复现成功、
-  确信是有效缺陷时才用；无法复现就用备注说明，不要用它蒙过去。
+- 「确认 Bug」是**人工评审动作**，你没有这个权限（`shanzhi_confirm_bug` 已不对你开放）。
+  无法复现或判断是误报时，只能用 `shanzhi_remark_bug` 写清结论，是否确认由人决定。
 
 ## 工作区说明
 
@@ -291,8 +305,9 @@ Symphony 内置（凭证留在 Symphony 进程内，你不需要也不应该去�
 - `shanzhi_get_bug`：读 Bug 完整详情
 - `shanzhi_bug_history`：读操作历史（含历次备注与状态变更）
 - `shanzhi_remark_bug`：加备注（你的主要交付载体）
-- `shanzhi_confirm_bug`：确认已复现
 - `shanzhi_resolve_bug`：置为已解决
+
+「确认 Bug」不在工具列表里：那是人工评审动作，只有人能在善治里做。
 
 善治 MCP 服务（只读，用于查证）：
 

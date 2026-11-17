@@ -69,6 +69,7 @@ defmodule SymphonyElixir.Shanzhi.Client do
           page_name: String.t(),
           web_url: String.t() | nil,
           assignee: String.t() | nil,
+          plans: [String.t()],
           require_confirmed: boolean()
         }
 
@@ -123,6 +124,7 @@ defmodule SymphonyElixir.Shanzhi.Client do
            page_name: resolve_setting(provider["page_name"], nil) || "Bug管理",
            web_url: resolve_setting(provider["web_url"], System.get_env("SF_WEB_URL")),
            assignee: resolve_setting(provider["assignee"], System.get_env("SF_ASSIGNEE")),
+           plans: resolve_plans(provider["plans"], System.get_env("SF_PLANS")),
            require_confirmed: resolve_boolean(provider["require_confirmed"], true)
          }}
     end
@@ -235,10 +237,28 @@ defmodule SymphonyElixir.Shanzhi.Client do
     |> enrich_and_normalize(settings)
   end
 
-  defp dispatchable_row?(row, %{require_confirmed: false}), do: is_map(row)
+  defp dispatchable_row?(row, %{require_confirmed: false} = settings), do: in_plan?(row, settings)
 
-  defp dispatchable_row?(row, _settings) when is_map(row), do: confirmed?(row["confirmed"])
+  defp dispatchable_row?(row, settings) when is_map(row),
+    do: confirmed?(row["confirmed"]) and in_plan?(row, settings)
+
   defp dispatchable_row?(_row, _settings), do: false
+
+  # 接口的 planList 已经过滤过一遍，这里再核一次：
+  # 一是防止接口忽略未知参数，二是 fetch_issues_by_ids 走的是详情接口、没有该过滤，
+  # Bug 被挪出指定迭代后应当立刻停下正在跑的任务。
+  defp in_plan?(_row, %{plans: []}), do: true
+
+  defp in_plan?(row, %{plans: plans}) when is_map(row) do
+    plan = row["plan"]
+    name = normalize_string(row["planName"])
+
+    Enum.any?(plans, fn entry ->
+      entry == name or (not is_nil(plan) and String.trim(to_string(plan)) == entry)
+    end)
+  end
+
+  defp in_plan?(_row, _settings), do: false
 
   @doc false
   def confirmed?(value) when value in [true, 1], do: true
@@ -330,19 +350,23 @@ defmodule SymphonyElixir.Shanzhi.Client do
 
   defp find_page(settings, statuses, page) do
     with {:ok, params} <- build_params(settings, statuses) do
-      body = %{
-        "orderByBean" => %{"attributeName" => "id", "sortType" => "desc"},
-        "pageIndex" => page,
-        "pageRows" => @page_size,
-        "params" => params
-      }
-
-      request("POST", "/iot-zt/zt-bug/find-page-list", body, settings)
+      find_page_by_params(params, page, settings)
     end
   end
 
+  defp find_page_by_params(params, page, settings) do
+    body = %{
+      "orderByBean" => %{"attributeName" => "id", "sortType" => "desc"},
+      "pageIndex" => page,
+      "pageRows" => @page_size,
+      "params" => params
+    }
+
+    request("POST", "/iot-zt/zt-bug/find-page-list", body, settings)
+  end
+
   defp build_params(settings, statuses) do
-    params =
+    base =
       %{
         "productId" => settings.product_id,
         "depId" => settings.dep_id,
@@ -350,16 +374,121 @@ defmodule SymphonyElixir.Shanzhi.Client do
       }
       |> reject_nil_values()
 
-    case settings.assignee do
-      nil ->
-        {:ok, params}
+    with {:ok, params} <- put_assignee_filter(base, settings),
+         {:ok, params} <- put_plan_filter(params, settings) do
+      {:ok, params}
+    end
+  end
 
-      assignee ->
-        with {:ok, mobile} <- resolve_assignee_mobile(settings, assignee) do
-          {:ok, Map.put(params, "assignedToList", [mobile])}
+  # 可选：只看指派给某人的 Bug。姓名会先换成接口要求的手机号。
+  defp put_assignee_filter(params, %{assignee: nil}), do: {:ok, params}
+
+  defp put_assignee_filter(params, %{assignee: assignee} = settings) do
+    with {:ok, mobile} <- resolve_assignee_mobile(settings, assignee) do
+      {:ok, Map.put(params, "assignedToList", [mobile])}
+    end
+  end
+
+  # 可选：只看指定迭代（善治的「所属迭代」）下的 Bug，支持多个。
+  #
+  # 接口只认 `planList`，且必须是迭代 ID 数组：`planIds` / `planIdList`
+  # 都会被静默忽略（实测传了等于没传）。所以按名称配置时要先反查 ID。
+  defp put_plan_filter(params, %{plans: []}), do: {:ok, params}
+
+  defp put_plan_filter(params, %{plans: plans} = settings) do
+    with {:ok, ids} <- resolve_plan_ids(plans, params, settings) do
+      {:ok, Map.put(params, "planList", ids)}
+    end
+  end
+
+  defp resolve_plan_ids(plans, params, settings) do
+    {ids, names} = Enum.split_with(plans, &plan_id?/1)
+    ids = Enum.map(ids, &String.to_integer/1)
+
+    case names do
+      [] ->
+        {:ok, Enum.uniq(ids)}
+
+      names ->
+        with {:ok, name_to_id} <- plan_name_index(params, settings) do
+          lookup_plan_names(names, name_to_id, ids)
         end
     end
   end
+
+  defp lookup_plan_names(names, name_to_id, acc) do
+    Enum.reduce_while(names, {:ok, acc}, fn name, {:ok, acc} ->
+      case Map.fetch(name_to_id, name) do
+        {:ok, id} -> {:cont, {:ok, [id | acc]}}
+        :error -> {:halt, {:error, {:shanzhi_unknown_plan, name}}}
+      end
+    end)
+    |> case do
+      {:ok, ids} -> {:ok, ids |> Enum.uniq() |> Enum.sort()}
+      error -> error
+    end
+  end
+
+  # 善治没有可用的迭代列表接口（/iot-zt/zt-plan/* 全部返回 805），
+  # 只能从 Bug 列表里反查「迭代名 -> 迭代 ID」。反查走不带迭代过滤的查询，
+  # 同样是 15s 轮询，所以缓存 5 分钟。
+  defp plan_name_index(params, settings) do
+    key = {__MODULE__, :plan_names, settings.base_url, params["productId"], params["depId"], params["statusList"]}
+    now = System.monotonic_time(:millisecond)
+
+    case :persistent_term.get(key, nil) do
+      {index, expires_at} when is_map(index) ->
+        if now < expires_at, do: {:ok, index}, else: fetch_plan_name_index(key, params, settings)
+
+      _ ->
+        fetch_plan_name_index(key, params, settings)
+    end
+  end
+
+  defp fetch_plan_name_index(key, params, settings) do
+    case collect_plan_names(params, settings, 1, %{}) do
+      {:ok, index} ->
+        :persistent_term.put(
+          key,
+          {index, System.monotonic_time(:millisecond) + @members_cache_ttl_ms}
+        )
+
+        {:ok, index}
+
+      error ->
+        error
+    end
+  end
+
+  defp collect_plan_names(_params, _settings, page, acc) when page > @max_pages, do: {:ok, acc}
+
+  defp collect_plan_names(params, settings, page, acc) do
+    with {:ok, payload} <- find_page_by_params(params, page, settings) do
+      rows = list_rows(payload)
+      total = if is_map(payload), do: integer_or_zero(payload["count"]), else: 0
+
+      acc =
+        Enum.reduce(rows, acc, fn row, acc ->
+          with id when is_integer(id) <- row["plan"],
+               name when is_binary(name) and name != "" <- normalize_string(row["planName"]) do
+            Map.put_new(acc, name, id)
+          else
+            _ -> acc
+          end
+        end)
+
+      fetched = (page - 1) * @page_size + length(rows)
+
+      cond do
+        rows == [] -> {:ok, acc}
+        fetched >= total -> {:ok, acc}
+        length(rows) < @page_size -> {:ok, acc}
+        true -> collect_plan_names(params, settings, page + 1, acc)
+      end
+    end
+  end
+
+  defp plan_id?(value), do: is_binary(value) and String.match?(value, ~r/^\d+$/)
 
   # 可选：只处理指派给某人的 Bug。姓名会先换成接口要求的手机号。
   defp resolve_assignee_mobile(settings, person) do
@@ -971,6 +1100,39 @@ defmodule SymphonyElixir.Shanzhi.Client do
   end
 
   defp resolve_setting(value, _fallback), do: normalize_string(value)
+
+  # 「所属迭代」既可以写成 YAML 数组，也可以用 SF_PLANS 传逗号分隔的字符串。
+  # 元素可以是迭代 ID，也可以是迭代名称；中文逗号一并支持。
+  # 数组留空视为「未配置」，继续回落到 SF_PLANS，避免 WORKFLOW.md 里的空数组
+  # 把环境变量屏蔽掉。
+  defp resolve_plans([], fallback), do: to_plan_list(fallback)
+
+  defp resolve_plans(value, _fallback) when is_list(value), do: to_plan_list(value)
+
+  defp resolve_plans(value, fallback) do
+    value
+    |> resolve_setting(fallback)
+    |> to_plan_list()
+  end
+
+  defp to_plan_list(values) when is_list(values) do
+    values
+    |> Enum.map(&plan_entry/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp to_plan_list(value) when is_binary(value) do
+    value
+    |> String.split([",", "，"], trim: true)
+    |> to_plan_list()
+  end
+
+  defp to_plan_list(_value), do: []
+
+  # YAML 里写 `plans: [2793]` 解析出来是整数，必须一并接受。
+  defp plan_entry(value) when is_integer(value), do: Integer.to_string(value)
+  defp plan_entry(value), do: normalize_string(value)
 
   defp resolve_integer(value, _fallback) when is_binary(value) do
     case String.trim(value) do

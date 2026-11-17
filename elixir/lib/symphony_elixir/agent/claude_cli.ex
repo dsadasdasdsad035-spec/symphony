@@ -463,6 +463,12 @@ defmodule SymphonyElixir.Agent.ClaudeCli do
         json -> ["--mcp-config", shell_escape(json), "--strict-mcp-config"]
       end
 
+    disallowed_args =
+      case disallowed_mcp_tools() do
+        [] -> []
+        tools -> ["--disallowedTools" | Enum.map(tools, &shell_escape/1)]
+      end
+
     resume =
       if is_binary(session_id) and String.trim(session_id) != "" do
         ["--resume", shell_escape(session_id)]
@@ -470,7 +476,7 @@ defmodule SymphonyElixir.Agent.ClaudeCli do
         []
       end
 
-    [unset_prefix(secret_names), claude_command_line(base ++ model_args ++ mcp_args ++ resume)]
+    [unset_prefix(secret_names), claude_command_line(base ++ model_args ++ mcp_args ++ disallowed_args ++ resume)]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
   end
@@ -509,6 +515,21 @@ defmodule SymphonyElixir.Agent.ClaudeCli do
       end
 
     Map.merge(base, extra_mcp_servers())
+  end
+
+  # 额外 MCP 服务的禁用清单（`SYMPHONY_MCP_DISALLOWED_TOOLS`，空格分隔）。
+  #
+  # codex 侧用 `enabled_tools` 做白名单，claude 只有 `--disallowedTools` 可用，
+  # 所以由 entrypoint 把「不该给 agent 的写操作」显式列出来，两边权限才能对齐。
+  # 善治的 confirm_bug 必须在这份清单里：确认是人工评审动作。
+  defp disallowed_mcp_tools do
+    case System.get_env("SYMPHONY_MCP_DISALLOWED_TOOLS") do
+      value when is_binary(value) ->
+        value |> String.split(~r/\s+/, trim: true) |> Enum.uniq()
+
+      _ ->
+        []
+    end
   end
 
   defp extra_mcp_servers do
