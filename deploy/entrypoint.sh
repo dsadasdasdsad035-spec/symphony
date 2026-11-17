@@ -89,6 +89,42 @@ if [ -z "${GITLAB_TOKEN:-}" ] && [ -n "${GIT_TOKEN:-}" ]; then
   export GITLAB_TOKEN="${GIT_TOKEN}"
 fi
 
+# ---------------------------------------------------------------------------
+# 2b. IIDP 开发环境发版凭据（deploy/publish_dev.sh 用）
+# ---------------------------------------------------------------------------
+# 发版脚本要登录 app-test（:30669），并对内置应用走恢复通道，需要三样：
+# 账号、口令、superuser token。值来自 .env（→ Secret symphony-env → envFrom）；
+# 这里只补默认值和缺失告警，显式设过的一律不覆盖（同上面的 GITLAB_TOKEN 惯例）。
+#
+# 口令与 token 只经进程环境传递：不落日志、不写文件——Agent 读得到的是环境变量，
+# 而 WORKFLOW.md 与发版脚本里都不出现明文。
+export IIDP_BASE="${IIDP_BASE:-http://192.168.181.104:30669}"
+export IIDP_USER="${IIDP_USER:-implementer}"
+
+_iidp_missing=""
+if [ -z "${IIDP_PASSWORD:-}" ]; then
+  _iidp_missing="${_iidp_missing} IIDP_PASSWORD"
+fi
+# superuser token 也允许用文件形式提供，二者有其一即可
+if [ -z "${IIDP_SUPERUSER_TOKEN:-}" ] && [ -z "${IIDP_SUPERUSER_TOKEN_FILE:-}" ]; then
+  _iidp_missing="${_iidp_missing} IIDP_SUPERUSER_TOKEN"
+fi
+if [ -n "${_iidp_missing}" ]; then
+  log "警告: 缺少${_iidp_missing}，开发环境发版会在 preflight / 内置应用通道处失败"
+else
+  log "开发环境发版凭据就绪（用户 ${IIDP_USER}，目标 ${IIDP_BASE}）"
+fi
+unset _iidp_missing
+
+# 发版脚本以 ConfigMap 挂载（只读），这里导出路径供 WORKFLOW.md 引用，
+# 免得提示词里写死绝对路径。
+if [ -f /opt/symphony-release/publish_dev.sh ]; then
+  export PUBLISH_DEV_SH="/opt/symphony-release/publish_dev.sh"
+  log "发版脚本已就绪: ${PUBLISH_DEV_SH}"
+else
+  log "提示: 未挂载发版脚本（/opt/symphony-release/publish_dev.sh），开发环境发版不可用"
+fi
+
 git config --global user.name "${GIT_AUTHOR_NAME:-Symphony Agent}"
 git config --global user.email "${GIT_AUTHOR_EMAIL:-symphony-agent@localhost}"
 git config --global init.defaultBranch main

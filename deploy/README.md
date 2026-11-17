@@ -55,6 +55,10 @@ vi .env                   # 填善治账号、产品 ID、GitLab 凭据
 | `SF_PROJECT_ID` | 善治项目 ID（可选） |
 | `SF_DEP_ID` | 部门 ID（可选，缺省用客户端默认值） |
 | `SF_ASSIGNEE` | 只看指派给某人的 Bug（姓名或 11 位手机） |
+| `IIDP_BASE` | 开发环境地址，必须含 `30669`（`deploy/publish_dev.sh` 的闸门） |
+| `IIDP_USER` / `IIDP_PASSWORD` | 开发环境发版账号（口令只留在环境变量里） |
+| `IIDP_SUPERUSER_TOKEN` | 内置应用恢复通道的 superuser token（见下文「开发环境发版」） |
+| `PUBLISH_LOCK_DIR` | 跨工作区发版互斥锁目录，默认 `/data2/locks` |
 
 `SF_PASSWORD` 等敏感变量只会留在 Symphony 进程里：派发 Agent 时 Symphony 会把这些环境变量
 从子进程里剔除，Agent 通过 `shanzhi_*` 工具间接读写 Bug。
@@ -133,6 +137,44 @@ SHANZHI_MCP_REF=master
 `SHANZHI_MCP_TOOLS` 改成 `all`。
 
 凭证放在服务自己的配置文件里，只把路径传给 MCP 服务，agent 的进程环境里不出现账号密码。
+
+## 开发环境发版（app-test）
+
+`symphony/publish_dev.sh` 把缺陷修复发布到**开发环境**（`:30669`），演示环境
+（`:30680`）不受影响——脚本第一件事就是校验目标地址，不含 `30669` 直接退出。
+
+Agent 通过 `$PUBLISH_DEV_SH` 调用（K8s 里由 ConfigMap `symphony-release` 挂到
+`/opt/symphony-release/publish_dev.sh`，entrypoint 导出该路径）。注意当前线上镜像的
+entrypoint 如果还是旧版，该变量为空，所以提示词里用绝对路径兜底：
+
+```bash
+RELEASE="${PUBLISH_DEV_SH:-/opt/symphony-release/publish_dev.sh}"
+$RELEASE --issue SF-83323            # 推导致动应用并发布
+$RELEASE --issue SF-83323 --dry-run  # 零网络零写入，只看将执行什么
+$RELEASE --issue SF-83323 --apps=sie-iidp-de-tool
+```
+
+它比直接调 `scripts/publish_apps_to_env.py` 多做四件事：
+
+| 能力 | 为什么需要 |
+|---|---|
+| 环境闸门 | 误传 `:30680` 会在任何构建前被拒绝 |
+| 全局排它锁 | `publish_apps_to_env.py` 的锁是每个工作区一把，两个 Agent 并发时会互相踩，把 `app_market` 复位成 `noUp` |
+| 合并跟踪分支 | 修复分支常落后于跟踪分支，直接打包会漏掉别人的代码 |
+| 只发改动应用 | 全量发布是分钟级，会撞 Agent 的 turn 上限 |
+
+退出码：`0` 成功｜`2` 环境闸门拒绝｜`3` 无可发布应用｜`4` 已有发版在进行｜
+`5` 合并冲突｜`6` 工作区不干净｜`8` 跟踪分支失效｜其他为 `publish` 脚本原样透传。
+
+**发版是 resolve 的前置条件。** 善治 `resolve_bug` 会把 Bug 移到 `resolved`，
+而 Symphony 的 `active_states` 只有 `active`；下一个 30 秒轮询就会发现该 Bug
+既不在活跃态、也不在终态，直接 `terminate_running_issue`。所以顺序必须是：
+
+```
+合并跟踪分支 → 发版 → 核对环境 → shanzhi_resolve_bug
+```
+
+发版失败只能 `shanzhi_remark_bug` 记备注，**不要 resolve**，否则这一轮的改动就丢了。
 
 ## 部署到线上（Kubernetes / Rancher）
 

@@ -32,8 +32,26 @@ apply_workflow() {
   log "WORKFLOW.md 已同步到 ConfigMap（Symphony 1 秒内热加载）"
 }
 
+# 开发环境发版脚本也走 ConfigMap：19K，远低于 1MiB 的上限，且改脚本不用重建镜像。
+# 挂载用目录方式（非 subPath）才能随 ConfigMap 更新刷新；只读卷靠
+# deployment.yaml 里的 defaultMode: 0755 拿到可执行位，不依赖 chmod。
+apply_release_script() {
+  local script="${HERE}/../publish_dev.sh"
+  [ -f "${script}" ] || die "缺少 ${script}"
+  kubectl create namespace "${NS}" 2>/dev/null || true
+  kubectl create configmap symphony-release -n "${NS}" \
+    --from-file=publish_dev.sh="${script}" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  log "publish_dev.sh 已同步到 ConfigMap symphony-release（挂到 /opt/symphony-release）"
+}
+
 if [ "${1:-}" = "--workflow-only" ]; then
   apply_workflow
+  exit 0
+fi
+
+if [ "${1:-}" = "--release-only" ]; then
+  apply_release_script
   exit 0
 fi
 
@@ -104,6 +122,7 @@ fi
 # 4. 工作负载
 # ---------------------------------------------------------------------------
 apply_workflow
+apply_release_script
 kubectl apply -k "${HERE}" -n "${NS}"
 
 log "等待滚动完成（首次需要拉取约 1.6GB 镜像）"

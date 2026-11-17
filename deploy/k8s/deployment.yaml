@@ -83,6 +83,11 @@ spec:
             - name: workflow
               mountPath: /config
               readOnly: true
+            # 开发环境发版脚本。目录方式挂载，ConfigMap 更新后容器内自动刷新；
+            # defaultMode: 0755 让脚本直接可执行（只读卷上无法 chmod）。
+            - name: release
+              mountPath: /opt/symphony-release
+              readOnly: true
           startupProbe:
             # escript 启动 + entrypoint 生成各 CLI 配置，冷启动约 20~40 秒；
             # 首次拉 1.6GB 镜像另有 image pull 时间，不占用这个预算。
@@ -130,3 +135,9 @@ spec:
             items:
               - key: WORKFLOW.md
                 path: WORKFLOW.md
+        # 发版脚本：由 apply.sh 从 deploy/publish_dev.sh 生成。
+        # defaultMode 必须是 0755——ConfigMap 卷默认 0644，只读挂载下无法 chmod。
+        - name: release
+          configMap:
+            name: symphony-release
+            defaultMode: 0755

@@ -196,14 +196,138 @@ server:
 ## 开工前必须先确认问题真实存在
 
 Symphony 只会把「状态=激活 且 确认=是」的 Bug 派给你，说明已有人确认过。
-但**动手改代码之前，仍要对照代码核实问题是否真的存在**：
+但**动手改代码之前，仍要对照代码核实问题是否真的存在**。按下面四种情况分流。
 
-- 能定位到问题：正常修复并交付。
-- 定位不到、或看代码发现根本不是 Bug（已被别的改动修好、属于需求变更、环境/数据问题）：
-  **不要臆造改动**。用 `shanzhi_remark_bug` 写清楚判断依据和结论，然后直接结束本次任务。
-  这种 Bug 由人工决定后续状态，**不要调用 `shanzhi_resolve_bug`**。
-- 「确认 Bug」是**人工评审动作**，你没有这个权限（`shanzhi_confirm_bug` 已不对你开放）。
-  无法复现或判断是误报时，只能用 `shanzhi_remark_bug` 写清结论，是否确认由人决定。
+### 情况一：已由既有提交修复 → 直接解决，不要重复改
+
+能指出**一个具体提交**，且该提交**在目标分支上**，说明别人已经修好了。这种情况允许调用
+`shanzhi_resolve_bug`，但必须先满足下面的闸门。
+
+**硬闸门：说不出具体 SHA 就不许走这条。**「大概已经修好了」「看起来没问题」「应该是某次
+改动带上的」都不算。没有 SHA 就退回情况二，只留备注。
+
+1. 找提交。按信度从高到低，别一上来就翻 `git log`：
+
+   - **先读操作历史**。人工或上一轮很可能已经把提交号 / MR 写进备注了，信度最高：
+
+     ```
+     shanzhi_bug_history(<bug_id>)
+     ```
+
+   - **再查子模块本地历史**。只有子模块是完整历史，且只覆盖当前检出提交的祖先链：
+
+     ```bash
+     git -C <子目录> log --oneline -2000 | grep -i "<关键词>"
+     git -C <子目录> show -s --format="%H%n%s" <sha>
+     ```
+
+   - **跨分支只能走 GitLab API**。本地 `git log` 看不到别的分支，必须用 `ref_name`
+     锁定目标分支（`<url-encoded-path>` 见文末对照表）：
+
+     ```bash
+     TOKEN="${GITLAB_TOKEN:-$GIT_TOKEN}"
+     curl -s --noproxy '*' --max-time 20 -H "PRIVATE-TOKEN: $TOKEN" \
+       "http://192.168.175.55:9888/api/v4/projects/<url-encoded-path>/repository/commits?search=<关键词>&ref_name=<跟踪分支>&per_page=10"
+     ```
+
+   注意：**提交备注里不带 Bug 编号**（实测 7 个子仓全历史 0 条带 `#数字` / `SF-数字`），
+   只能按关键词语义匹配。请用 Bug 标题里的具体名词，不要只搜「修复」「优化」这类词。
+
+2. **确认该提交确实在目标分支上**。跳过这步就等于没验证：
+
+   ```bash
+   TOKEN="${GITLAB_TOKEN:-$GIT_TOKEN}"
+   curl -s --noproxy '*' --max-time 20 -H "PRIVATE-TOKEN: $TOKEN" \
+     "http://192.168.175.55:9888/api/v4/projects/<url-encoded-path>/repository/commits/<sha>"
+   ```
+
+   返回里有 `title` 与 `short_id` 才算命中。查不到就是**不在该分支**，退回情况二。
+
+2b. **确认环境里跑的确实是这份代码**。跳过这步的代价已被实测过（SF-83343）：
+   提交在跟踪分支上，但开发环境的产物还是修复前的构建，Bug 照样复现。
+
+   环境里的 app 产物在引擎 Pod 的 `/apps/modules/` 下。用 `javap` 反编译对应 class
+   （引擎 Pod 自带 `javac`/`javap`，JDK 21），确认改动真的在里面：
+
+   ```bash
+   APOD=$(kubectl get pod -n app-test -o name | grep iidp-app | head -1)
+   kubectl exec -n app-test "${APOD#pod/}" -- sh -c '
+     cd /tmp && rm -rf chk && mkdir chk && cd chk
+     unzip -o -q /apps/modules/<app>-<版本>.jar "BOOT-INF/classes/<class 路径>.class"
+     javap -p -c BOOT-INF/classes/<class 路径>.class | sed -n "/<方法名>/,/^$/p"'
+   ```
+
+   判据：修复是**删掉**的写法，字节码里就不该再有那个字符串常量（如
+   `ldc "description"`）；修复是**新增**的调用，就该能看到新方法引用。方法体行数
+   与修复前后对比也能佐证（SF-83343 实测 204 行 → 修后应为 192 行）。
+
+   顺带看一眼 `/apps/uploads/` 与 `/apps/modules.jdk21-*-bak/` 的 jar 时间戳：
+   如果 **bak 里是修后版本、modules 里是修前版本**，说明修复曾进过环境、后来被一次
+   构建覆盖回去了——这种情况必须重新发版，光 resolve 不解决问题。
+
+   ```bash
+   kubectl exec -n app-test "${APOD#pod/}" -- sh -c \
+     'ls -l --full-time /apps/modules/<app>*.jar /apps/uploads/<app>*.jar 2>/dev/null'
+   kubectl get pod -n app-test "${APOD#pod/}" -o jsonpath='{.status.startTime}{"\n"}'
+   ```
+
+   Pod 启动时间必须晚于 jar 修改时间，才能确定进程加载的是这个 jar。
+
+   **产物不含修复时不许 resolve**：改为发版（见「发布到开发环境」），发完再用同样
+   方式复验，通过后才 resolve。
+
+3. 拼链接。这个 GitLab 版本的 commit API **`web_url` 返回 `null`**，不要依赖它，手工拼：
+
+   ```
+   http://192.168.175.55:9888/<project-path>/commit/<sha>
+   ```
+
+   `<project-path>` 是不编码的形式（如 `ipaas/sie-snest`）。
+
+   **中间是 `/commit/`，不要再加 `/-/`。** 这台实例是 GitLab **11.3.0**，用的是旧式 URL
+   方案（MR 也一样：`/<project-path>/merge_requests/<iid>`，GitLab 自己返回的 `web_url`
+   里就没有 `/-/`）。写成 `/-/commit/` 会被当成未知路由，浏览器跳转到
+   `/users/sign_in`，看起来像"链接打不开"。已实测：`/commit/<sha>` 返回 200 且页面含
+   diff，`/-/commit/<sha>` 返回 302 → 登录页。
+
+4. 先 `shanzhi_remark_bug` 写核实过程，再 `shanzhi_resolve_bug`。`comment` 支持 HTML，
+   善治页面会渲染 `<a>` 与 `<code>`，**下面四个要素缺一不可**：
+
+   ```
+   shanzhi_resolve_bug(
+     bug_id     = <bug_id>,
+     resolution = "fixed",
+     comment    = "<p><b>已由既有提交修复，本轮无新增改动。</b></p>
+                   <p>提交：<a href=\"<提交链接>\"><code><sha 前 8 位></code></a></p>
+                   <p>提交备注：<i><提交标题></i></p>
+                   <p>定位依据：<哪个文件 / 方法 / 行为被改，为什么改的就是本 Bug></p>
+                   <p>环境核验：<环境里 <app> 的 jar 构建时间；javap 反编译 <方法> 确认
+                     已含本次改动（<判据>）；Pod 启动时间晚于 jar 时间></p>
+                   <p>测试核验：<跑过的验证或可复现结论></p>"
+   )
+   ```
+
+   要素对应：**提交链接** → `<a href>`；**提交备注** → `git show -s --format=%s`
+   或 API 的 `title`，照原文抄，不要改写；**定位依据**；**环境核验**（第 2b 步）；
+   **测试核验**。五者缺一不可，没有环境核验就等于没证明修好了。
+
+### 情况二：根本不是 Bug（需求变更 / 环境问题 / 数据问题 / 误报）
+
+**不要臆造改动**，**不要 resolve**。用 `shanzhi_remark_bug` 写清晰判断依据和结论，
+然后直接结束本次任务。这种 Bug 由人工决定后续状态。
+
+### 情况三：能定位到真实缺陷 → 正常修复并交付
+
+按「交付」一节走 MR 流程，最后调用 `shanzhi_resolve_bug`。
+
+### 情况四：「确认 Bug」是人工评审动作
+
+你没有这个权限（`shanzhi_confirm_bug` 已不对你开放）。无法复现或判断是误报时，
+只能用 `shanzhi_remark_bug` 写清结论，是否确认由人决定。
+
+> 关于工作区历史：顶层仓库是**浅克隆**（`git rev-parse --is-shallow-repository` 为 `true`，
+> `git rev-list --count HEAD` 通常是 1），所以**在根目录 `git log` 查不到历史是正常现象**，
+> 不代表仓库没有历史。要翻历史一律进对应子模块目录，子模块才是完整历史。
 
 ## 工作区说明
 
@@ -280,11 +404,48 @@ Symphony 只会把「状态=激活 且 确认=是」的 Bug 派给你，说明�
   git 一律用 `-c http.proxy= -c https.proxy=`。
 - 子仓库改动先在各子仓库提交并推分支，再回根仓库 `git add <子模块路径>`
   推进指针、提交并推根仓库分支。
-- 全部完成后，先用 `shanzhi_remark_bug` 把「改动清单 + 各仓库 MR 链接」写回操作历史。
-- **最后调用 `shanzhi_resolve_bug` 把 Bug 置为「已解决」**（`resolution` 默认 `fixed`，
-  `comment` 里写明 MR 链接），不要置为「已关闭」。
-  「已解决」在 Symphony 里等价于 `In Review`：agent 停下、工作区保留，等待人工验收；
-  「已关闭」是终止状态，会立即停止 agent 并删除工作区（未推送的改动会一并丢失）。
+- 交付按下面**四步顺序**走，顺序不能换：
+
+  1. **合并跟踪分支并推送**——`publish_dev.sh` 会自动做，也可手工
+     `git merge origin/<跟踪分支>` 后推送，让评审看到的代码与发版所用代码一致。
+  2. **发布到开发环境**——见下一节「发布到开发环境」。
+  3. **核对环境**——脚本退出码为 0 才算发版成功；它已在末尾复核市场行与已安装行的
+     version + md5。仍建议把报告里的版本号写回备注，便于人工比对。
+  4. **`shanzhi_resolve_bug` 置为「已解决」**（`resolution` 默认 `fixed`，
+     `comment` 写明 MR 链接 + 环境地址 + 发布的 app 与版本号）。
+     不要置为「已关闭」：「已解决」在 Symphony 里等价于 `In Review`，agent 停下、
+     工作区保留等待人工验收；「已关闭」是终止状态，会立即停止 agent 并删除工作区。
+
+- 先用 `shanzhi_remark_bug` 把「改动清单 + 各仓库 MR 链接 + 发版结果」写回操作历史，
+  再调用 `shanzhi_resolve_bug`。
+
+## 发布到开发环境
+
+用固定脚本发版，**不要**直接调 `scripts/publish_apps_to_env.py`——直接调会绕过环境闸门
+与跨工作区互斥锁：
+
+```bash
+RELEASE="${PUBLISH_DEV_SH:-/opt/symphony-release/publish_dev.sh}"
+"$RELEASE" --issue {{ issue.identifier }} --dry-run   # 先预演
+"$RELEASE" --issue {{ issue.identifier }}             # 实际发版
+```
+
+`$PUBLISH_DEV_SH` 由 entrypoint 导出；镜像里若还是旧版 entrypoint 则该变量为空，
+所以上面用绝对路径兜底——两条路指向同一个文件
+`/opt/symphony-release/publish_dev.sh`（ConfigMap `symphony-release` 挂载）。
+脚本自己会：校验目标是开发环境、取全局排它锁、合并跟踪分支、按 diff 推导改动过的
+app（只发这些，不发全量）、缺依赖时 `npm ci`，最后交给既有发布脚本。
+
+退出码含义：`0` 成功｜`2` 目标不是开发环境｜`3` 无可发布应用｜`4` 已有发版在进行｜
+`5` 合并冲突｜`6` 工作区不干净｜`8` 跟踪分支失效。非 0 一律**不要** resolve。
+
+**发版必须在 resolve 之前完成。** 善治的 `resolve_bug` 会把 Bug 移到 `resolved`，
+而 Symphony 的 `active_states` 只有 `active`、`terminal_states` 只有 `closed`；
+下一个 30 秒轮询发现该 Bug 既不在活跃态也不在终态，会立即
+`terminate_running_issue` 停掉本轮 agent。先 resolve 再发版，发版命令会被腰斩在半路。
+
+发版失败时只用 `shanzhi_remark_bug` 写清失败原因、退出码和日志路径，
+把 Bug 留在「处理中」，不要 resolve。
 
 ## 各仓库的 GitLab 项目路径
 
@@ -295,8 +456,22 @@ Symphony 只会把「状态=激活 且 确认=是」的 Bug 派给你，说明�
 | `sie-snest-sdk/` | `ipaas%2Fsie-snest-sdk` | `feat-aios` |
 | `iidp-backend-demo-ai/` | `mijiuye%2Fiidp-backend-demo-ai` | `aios-test-lj` |
 | `sie-iidp-app-store/` | `appDev%2Fsie-iidp-app-store` | `v3.0.1-HOTFIX.001-jdk21` |
-| `sie-iidp-ai-agent-web/` | `TECH%2Ffunctional-app%2Fsie-iidp-ai-agent-web` | `dev` |
+| `sie-iidp-ai-agent-web/` | `TECH%2Ffunctional-app%2Fsie-iidp-ai-agent-web` | `test` |
+| `sie-iidp-base-inner-web/` | `TECH%2Fsie-iidp-base-inner-web` | `test` |
 | `sie-iidp-iam/` | `appDev%2Fsie-iidp-iam` | `demo/iter2-aios-compat` |
+
+> **建 MR 前先确认目标分支真实存在**。GitLab 允许向不存在的分支建 MR（照样返回 201），
+> 但会永久停在 `cannot_be_merged`，看起来像"提交成功了却合不掉"。
+> `sie-iidp-ai-agent-web` 原先跟的 `dev` 分支已被删除，现改为 `test`。
+> 校验方法：
+>
+> ```bash
+> TOKEN="${GITLAB_TOKEN:-$GIT_TOKEN}"
+> curl -s --noproxy '*' -o /dev/null -w '%{http_code}\n' -H "PRIVATE-TOKEN: $TOKEN" \
+>   "http://192.168.175.55:9888/api/v4/projects/<url-encoded-path>/repository/branches/<分支>"
+> ```
+>
+> 返回 `200` 才可建 MR；`404` 说明分支不存在，先停下来报告，不要硬建。
 
 ## 可用工具
 
