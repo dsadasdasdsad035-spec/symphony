@@ -43,10 +43,15 @@
 - **前端发版的前置：先合 `iidp-aios` 的 MR !8**（`.gitmodules` 里 `sie-iidp-ai-agent-web`
   的 `branch` 从已删除的 `dev` 改为 `test`）。未合并时脚本会以 exit 8 拒绝，提示
   「跟踪分支 origin/dev 不存在」——这是有意的，不是故障。
-- **entrypoint 的改动需重建镜像才生效**。当前线上镜像 `v4` 里的
-  `/usr/local/bin/symphony-entrypoint` 仍是旧版，`IIDP_*` 由 Secret 直接注入可用，
-  但 `PUBLISH_DEV_SH` 不会被导出；因此 WORKFLOW.md 用
-  `${PUBLISH_DEV_SH:-/opt/symphony-release/publish_dev.sh}` 兜底。下次构建镜像后自动切换。
+- **entrypoint 的改动已随镜像 `v5` 上线**（2026-11-17）。线上
+  `/usr/local/bin/symphony-entrypoint` 为 396 行版本，启动日志可见
+  「开发环境发版凭据就绪」「发版脚本已就绪」；Symphony 进程与 codex 子进程环境里
+  `PUBLISH_DEV_SH=/opt/symphony-release/publish_dev.sh`。WORKFLOW.md 仍用
+  `${PUBLISH_DEV_SH:-/opt/symphony-release/publish_dev.sh}` 兜底——镜像若回退到
+  `v4` 及更早，该变量不会被导出，绝对路径仍指向同一个文件，不会失效。
+  `v4` 的回滚点：`sha256:86ddf9523ab6f84dc939244958da1d90d85b06353451aa3613c8e533d322aa3b`。
+  另注：`deploy/k8s/apply.sh` 里曾有一个从未被使用的 `IMAGE` 默认值（还是 `v2`），
+  改它不会生效且易误导，已删除；镜像 tag 只由 `deployment.yaml` 决定。
 - **GitLab 是 11.3.0，用旧式 URL**：commit 链接是 `/<project-path>/commit/<sha>`，
   **不能带 `/-/`**（带 `/-/` 会 302 到登录页，看起来像"链接打不开"）。MR 同理。
   WORKFLOW.md 已修正。

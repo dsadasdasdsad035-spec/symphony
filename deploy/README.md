@@ -144,8 +144,8 @@ SHANZHI_MCP_REF=master
 （`:30680`）不受影响——脚本第一件事就是校验目标地址，不含 `30669` 直接退出。
 
 Agent 通过 `$PUBLISH_DEV_SH` 调用（K8s 里由 ConfigMap `symphony-release` 挂到
-`/opt/symphony-release/publish_dev.sh`，entrypoint 导出该路径）。注意当前线上镜像的
-entrypoint 如果还是旧版，该变量为空，所以提示词里用绝对路径兜底：
+`/opt/symphony-release/publish_dev.sh`，entrypoint 导出该路径，镜像 `v5` 起生效）。
+提示词里用绝对路径兜底，防止镜像回退到 v4 及更早时变量为空：
 
 ```bash
 RELEASE="${PUBLISH_DEV_SH:-/opt/symphony-release/publish_dev.sh}"

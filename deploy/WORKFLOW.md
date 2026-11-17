@@ -430,9 +430,10 @@ RELEASE="${PUBLISH_DEV_SH:-/opt/symphony-release/publish_dev.sh}"
 "$RELEASE" --issue {{ issue.identifier }}             # 实际发版
 ```
 
-`$PUBLISH_DEV_SH` 由 entrypoint 导出；镜像里若还是旧版 entrypoint 则该变量为空，
-所以上面用绝对路径兜底——两条路指向同一个文件
-`/opt/symphony-release/publish_dev.sh`（ConfigMap `symphony-release` 挂载）。
+`$PUBLISH_DEV_SH` 由 entrypoint 导出（镜像 `v5` 起生效），指向
+`/opt/symphony-release/publish_dev.sh`。上面的 `${PUBLISH_DEV_SH:-...}` 是兜底：
+镜像若回退到 v4 及更早，entrypoint 不会导出该变量，此时绝对路径仍能工作。
+两条路指向同一个文件（ConfigMap `symphony-release` 挂载）。
 脚本自己会：校验目标是开发环境、取全局排它锁、合并跟踪分支、按 diff 推导改动过的
 app（只发这些，不发全量）、缺依赖时 `npm ci`，最后交给既有发布脚本。
 

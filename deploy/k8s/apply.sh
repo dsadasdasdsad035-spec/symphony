@@ -13,8 +13,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${ENV_FILE:-${HERE}/../.env}"
 NS="${NS:-symphony}"
 DOMAIN="${DOMAIN:-symphony.dev.sie.iidp.cn}"
-IMAGE="${IMAGE:-harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v2}"
 PULL_SECRET_SOURCE="${PULL_SECRET_SOURCE:-authmcp/harbor-regcred}"
+# 镜像 tag 只由 deployment.yaml 决定（这里不设 IMAGE 变量：曾经有过一个从未被使用
+# 的 IMAGE 默认值，改它不会生效，反而误导）。换版本请改 deployment.yaml 的 image。
 
 log() { printf '[deploy] %s\n' "$*"; }
 die() { printf '[deploy] 错误: %s\n' "$*" >&2; exit 1; }
