@@ -1695,12 +1695,60 @@ defmodule SymphonyElixir.AppServerTest do
       assert String.ends_with?(resumed_cwd, "workspaces/MT-9001")
     end
 
-    test "续接失败时回退到 thread/start，不能把整轮跑废", %{
+    test "显式指定 model 时透传给 thread/start，未指定则不附加该字段", %{
       workspace_root: workspace_root,
       workspace: workspace,
       codex_binary: codex_binary,
       trace_file: trace_file
     } do
+      write_fake_codex!(
+        codex_binary,
+        ~s({"id":4,"result":{"id":"thread-unused"}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-model-1"}}})
+      )
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace, model: "local-glm5.3-flash")
+      AppServer.stop_session(session)
+
+      payload = traced_payload(trace_file, "thread/start")
+      assert get_in(payload, ["params", "model"]) == "local-glm5.3-flash"
+    end
+
+    test "续接线程时把模型一并带上，避免沿用旧模型", %{
+      workspace_root: workspace_root,
+      workspace: workspace,
+      codex_binary: codex_binary,
+      trace_file: trace_file
+    } do
+      write_fake_codex!(
+        codex_binary,
+        ~s({"id":4,"result":{"id":"thread-resumed-model","cwd":"#{workspace}"}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-fallback"}}})
+      )
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} =
+               AppServer.start_session(workspace,
+                 resume_thread_id: "thread-resumed-model",
+                 model: "local-glm5.3"
+               )
+
+      AppServer.stop_session(session)
+
+      payload = traced_payload(trace_file, "thread/resume")
+      assert get_in(payload, ["params", "model"]) == "local-glm5.3"
+    end
+
+    test "续接失败时回退到 thread/start，不能把整轮跑废", %{workspace_root: workspace_root, workspace: workspace, codex_binary: codex_binary, trace_file: trace_file} do
       write_fake_codex!(
         codex_binary,
         ~s({"id":4,"error":{"code":-32600,"message":"thread not found"}}),

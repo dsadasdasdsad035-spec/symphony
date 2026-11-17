@@ -157,6 +157,10 @@ defmodule SymphonyElixir.Config.Schema do
       field(:claude_model, :string, default: nil)
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
+      # 按工单切换模型：纯文本用 model，带图（描述里有图片链接/标签）用 multimodal_model。
+      # 留空表示不覆盖，由 CLI 自身配置决定。
+      field(:model, :string, default: nil)
+      field(:multimodal_model, :string, default: nil)
       # 续接上一轮线程前先压缩上下文，避免历史随轮数无限膨胀。
       # 0 表示不压缩（续接时直接用完整历史）。
       field(:compact_after_turns, :integer, default: 40)
@@ -178,6 +182,8 @@ defmodule SymphonyElixir.Config.Schema do
           :claude_model,
           :max_concurrent_agents,
           :max_turns,
+          :model,
+          :multimodal_model,
           :compact_after_turns,
           :max_retry_backoff_ms,
           :max_concurrent_agents_by_state

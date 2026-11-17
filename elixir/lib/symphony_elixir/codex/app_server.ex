@@ -44,6 +44,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     resume_thread_id = Keyword.get(opts, :resume_thread_id)
     resume_turns = Keyword.get(opts, :resume_turns, 0)
     compact_after_turns = Keyword.get(opts, :compact_after_turns, 0)
+    model = normalize_model(Keyword.get(opts, :model))
     dynamic_tool_binding = DynamicTool.bind()
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
@@ -59,7 +60,8 @@ defmodule SymphonyElixir.Codex.AppServer do
                dynamic_tool_binding,
                resume_thread_id,
                resume_turns,
-               compact_after_turns
+               compact_after_turns,
+               model
              ) do
         {:ok,
          %{
@@ -327,7 +329,8 @@ defmodule SymphonyElixir.Codex.AppServer do
          dynamic_tool_binding,
          resume_thread_id,
          resume_turns,
-         compact_after_turns
+         compact_after_turns,
+         model
        ) do
     case send_initialize(port) do
       :ok ->
@@ -337,7 +340,8 @@ defmodule SymphonyElixir.Codex.AppServer do
                  workspace,
                  session_policies,
                  dynamic_tool_binding,
-                 resume_thread_id
+                 resume_thread_id,
+                 model
                ),
              # 续接会带上整条线程的历史，轮数越多上下文越大；超阈值先压缩再开工。
              {:ok, compacted?} <-
@@ -359,39 +363,56 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   # 有上次的线程就续接；失败一律回退新建——续接只是省时间，不能挡住整轮运行。
-  defp resume_or_start_thread(port, workspace, session_policies, dynamic_tool_binding, resume_thread_id)
+  defp resume_or_start_thread(
+         port,
+         workspace,
+         session_policies,
+         dynamic_tool_binding,
+         resume_thread_id,
+         model
+       )
        when is_binary(resume_thread_id) and resume_thread_id != "" do
-    case resume_thread(port, workspace, session_policies, resume_thread_id) do
+    case resume_thread(port, workspace, session_policies, resume_thread_id, model) do
       {:ok, thread_id} ->
-        Logger.info("续接既有 codex 线程 thread_id=#{thread_id}")
+        Logger.info("续接既有 codex 线程 thread_id=#{thread_id} model=#{model || "inherit"}")
         {:ok, thread_id}
 
       {:error, reason} ->
         Logger.warning("续接线程失败，回退为新建会话 thread_id=#{resume_thread_id} reason=#{inspect(reason)}")
 
-        start_thread(port, workspace, session_policies, dynamic_tool_binding)
+        start_thread(port, workspace, session_policies, dynamic_tool_binding, model)
     end
   end
 
-  defp resume_or_start_thread(port, workspace, session_policies, dynamic_tool_binding, _resume_thread_id) do
-    start_thread(port, workspace, session_policies, dynamic_tool_binding)
+  defp resume_or_start_thread(
+         port,
+         workspace,
+         session_policies,
+         dynamic_tool_binding,
+         _resume_thread_id,
+         model
+       ) do
+    start_thread(port, workspace, session_policies, dynamic_tool_binding, model)
   end
 
   defp resume_thread(
          port,
          workspace,
          %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
-         thread_id
+         thread_id,
+         model
        ) do
     send_message(port, %{
       "method" => "thread/resume",
       "id" => @thread_resume_id,
-      "params" => %{
-        "threadId" => thread_id,
-        "approvalPolicy" => approval_policy,
-        "sandbox" => thread_sandbox,
-        "cwd" => workspace
-      }
+      "params" =>
+        %{
+          "threadId" => thread_id,
+          "approvalPolicy" => approval_policy,
+          "sandbox" => thread_sandbox,
+          "cwd" => workspace
+        }
+        |> maybe_put_model(model)
     })
 
     case await_response(port, @thread_resume_id) do
@@ -417,6 +438,21 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec extract_thread_id_for_test(term(), String.t() | nil) :: {:ok, String.t()}
   def extract_thread_id_for_test(payload, fallback \\ nil), do: extract_thread_id(payload, fallback)
 
+  # 只有显式指定模型时才带上 model 字段，否则让 codex 用 config.toml 里的默认值。
+  defp maybe_put_model(params, model) when is_binary(model) and model != "",
+    do: Map.put(params, "model", model)
+
+  defp maybe_put_model(params, _model), do: params
+
+  defp normalize_model(model) when is_binary(model) do
+    case String.trim(model) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_model(_model), do: nil
+
   defp maybe_compact_thread(port, thread_id, resume_turns, threshold)
        when is_integer(resume_turns) and is_integer(threshold) and threshold > 0 and
               resume_turns >= threshold do
@@ -438,18 +474,14 @@ defmodule SymphonyElixir.Codex.AppServer do
           {:error, reason} ->
             # 压缩可能仍在后台跑，此时发 turn/start 必然失败。让整轮失败交给
             # 调度器重试更划算：下一轮续接时线程大概率已经压好了。
-            Logger.warning(
-              "压缩上下文未在限定时间内完成 thread_id=#{thread_id} reason=#{inspect(reason)}"
-            )
+            Logger.warning("压缩上下文未在限定时间内完成 thread_id=#{thread_id} reason=#{inspect(reason)}")
 
             {:error, {:compaction_incomplete, reason}}
         end
 
       {:error, reason} ->
         # 连「开始压缩」都没成功，线程仍是空闲的，可以照常跑，只是上下文大一些。
-        Logger.warning(
-          "启动上下文压缩失败，沿用完整历史 thread_id=#{thread_id} reason=#{inspect(reason)}"
-        )
+        Logger.warning("启动上下文压缩失败，沿用完整历史 thread_id=#{thread_id} reason=#{inspect(reason)}")
 
         :skipped
     end
@@ -519,17 +551,20 @@ defmodule SymphonyElixir.Codex.AppServer do
          port,
          workspace,
          %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
-         dynamic_tool_binding
+         dynamic_tool_binding,
+         model
        ) do
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
-      "params" => %{
-        "approvalPolicy" => approval_policy,
-        "sandbox" => thread_sandbox,
-        "cwd" => workspace,
-        "dynamicTools" => dynamic_tool_binding.tool_specs
-      }
+      "params" =>
+        %{
+          "approvalPolicy" => approval_policy,
+          "sandbox" => thread_sandbox,
+          "cwd" => workspace,
+          "dynamicTools" => dynamic_tool_binding.tool_specs
+        }
+        |> maybe_put_model(model)
     })
 
     case await_response(port, @thread_start_id) do

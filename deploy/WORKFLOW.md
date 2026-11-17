@@ -143,7 +143,7 @@ hooks:
 
 agent:
   # 默认 codex；按 Bug 的 keywords 逐单切换（写 `claude` / `cursor cli` / `zcode`）。
-  # 模型与网关不在这里配：entrypoint 统一从 .env 的 AGENT_MODEL 生成各 CLI 配置。
+  # 网关与密钥仍由 entrypoint 从 .env 生成，模型起终点在下方 model / multimodal_model。
   kind: codex
   max_concurrent_agents: 3
   max_turns: 30
@@ -153,6 +153,15 @@ agent:
   #
   # 与 max_turns 取同值：每跑满一轮、下次续接时压缩一次，上下文始终有界。
   compact_after_turns: 30
+  # 按工单切换模型：善治 Bug 的描述里常带截图，纯文本模型遇到 view_image 会被
+  # 网关以 "not a multimodal model" 拒绝，整条线程随即退化成空转。因此这里把
+  # 纯文本与多模态分开配：
+  #   - 描述里出现图片链接 / <img> / Markdown 图片 → multimodal_model
+  #   - 其余 → model
+  # 任一留空表示不覆盖，沿用 codex 自身配置文件里的模型。
+  # 仅 codex 渠道支持按工单切模型，claude / cursor 仍走各自的 *_model 配置。
+  model: local-glm5.3
+  multimodal_model: local-glm5.3-flash
 
 codex:
   command: codex app-server

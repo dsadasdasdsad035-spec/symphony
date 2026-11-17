@@ -5,6 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Agent
+  alias SymphonyElixir.Agent.Model
   alias SymphonyElixir.{Config, PromptBuilder, ThreadStore, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
@@ -97,11 +98,24 @@ defmodule SymphonyElixir.AgentRunner do
     resume_turns = if previous, do: previous.turns, else: 0
     opts = Keyword.put(opts, :resume_turns, resume_turns)
 
+    # 带图的 Bug 用多模态模型，纯文本用推理更强的模型；都不配就沿用 CLI 默认。
+    # 只有 codex 支持按线程指定模型（thread/start 的 model 参数），其余 CLI 仍走
+    # 各自的 *_model 配置，这里给 nil 表示不干预，它们也不会读这个键。
+    agent_kind = Keyword.get(opts, :agent_kind) || Agent.Kind.resolve(issue)
+
+    decision =
+      if agent_kind == "codex" do
+        Model.resolve(issue)
+      else
+        %{model: nil, reason: :default, signals: []}
+      end
+
     session_opts = [
       worker_host: worker_host,
       resume_thread_id: previous && previous.thread_id,
       resume_turns: resume_turns,
-      compact_after_turns: Config.settings!().agent.compact_after_turns
+      compact_after_turns: Config.settings!().agent.compact_after_turns,
+      model: decision.model
     ]
 
     with {:ok, session} <- agent.start_session(workspace, session_opts) do

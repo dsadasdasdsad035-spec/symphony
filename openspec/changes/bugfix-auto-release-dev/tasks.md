@@ -216,5 +216,38 @@ shanzhi_bug_history → exec_command ×3 → view_image ×2 → exec_command ×7
 - SF-83323：workpad 57 行，代码与测试已改完并推送，MR opened / can_be_merged
 - SF-83324：workpad 24 → 29 行，进度由「定位中」推进到「已定位根因，准备修复」
 
-**注意**：模型只能全局切换（`.env` 的 `AGENT_MODEL`）；工单 `keywords` 只能切 CLI 类型
-（codex / claude / cursor / zcode），不能逐单换模型。
+**注意**：当时模型只能全局切换（`.env` 的 `AGENT_MODEL`）；工单 `keywords` 只能切 CLI 类型
+（codex / claude / cursor / zcode），不能逐单换模型。这一点已在下节修复。
+
+### 按工单切模型：纯文本用 5.3，带图才用多模态
+
+全局切成 flash 只是**一刀切的止血**：纯文字 Bug 也被降级到轻量档，推理能力白丢。
+真正的诉求是「谁需要看图，谁才用多模态」。
+
+**协议层本来就支持**：`codex app-server` 的 `thread/start`、`thread/resume` 都接受
+`model`（`turn/start` 也接受，但按线程设更省事），优先级高于 `config.toml`。容器内实测：
+
+```
+thread/start {model: "local-qwen3.5"} → {"thread": {...}, "model": "local-qwen3.5"}
+```
+
+**判定依据**：善治 Bug 的截图没有独立附件字段，而是以 OSS 链接形式直接写在描述
+（`steps` / `comment`）里，形如
+`https://sieiotoss.oss-cn-shanghai.aliyuncs.com/file/updata/<hash>.png`。
+所以只看工单文本即可判定，不需要额外接口调用。
+
+**改动**：
+1. 新增 `lib/symphony_elixir/agent/model.ex`：`resolve/1` 给出该工单这一轮用哪个模型。
+   命中图片链接 / `<img>` / Markdown 图片 → `multimodal_model`，否则 → `model`，
+   两者都没配 → `nil`（不覆盖，沿用 CLI 自身配置）。命中原因与信号会写日志。
+2. `config/schema.ex`：`agent.model`、`agent.multimodal_model`。
+3. `agent_runner.ex`：派发前算一次决策，随 `session_opts` 传入。
+4. `codex/app_server.ex`：`start_session/2` 接受 `:model`，透传给 `thread/start` 与
+   `thread/resume`；`nil` 时不附加该字段，行为与改造前一致。
+5. `deploy/WORKFLOW.md`：`model: local-glm5.3` + `multimodal_model: local-glm5.3-flash`。
+
+**判定取舍**：描述里出现 `.png` 文件名（例如代码中的静态资源名）也会命中多模态。
+这是刻意偏保守——误判成多模态的代价只是换一个模型，误判成纯文本则会让整轮跑废。
+
+**边界**：按工单切模型只对 codex 生效；claude / cursor / zcode 仍走各自的 `*_model`
+配置，遇到带图工单需自行保证所选模型支持视觉。
