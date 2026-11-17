@@ -133,3 +133,49 @@
 
 **两层防御的分工**：同 Pod 内（max_turns 循环）靠 resume 保住完整上下文；Pod 重建
 （发版）靠 workpad + 善治备注。两者互补，不是替代关系。
+
+### 上线踩到的坑：`thread/compact/start` 是异步的
+
+首次上线（`v6`）后每轮都失败：
+
+```
+error: {:response_error, %{"code" => -32603,
+  "message" => "failed to submit turn input: ActiveTurnNotSteerable { turn_kind: Compact }"}}
+```
+
+原因：`ThreadCompactStartResponse` 是**空对象**，它只表示「压缩已开始」，压缩本身是个
+后台 turn。我原来等到这个响应就发 `turn/start`，直接撞上正在跑的 compact turn。
+
+修法：发完 `thread/compact/start` 后继续等 **`thread/compacted` 通知**（或该 turn 的
+`turn/completed`）再开工，超时上限取 `min(codex.turn_timeout_ms, 10min)`。
+若「开始压缩」这一步就失败（线程仍空闲）→ 记日志后照常跑；若等了却超时（压缩可能仍在
+后台）→ **返回错误让整轮失败**，交给调度器重试，下一轮续接时线程已压好。
+压缩成功后 `turns_base` 归零，否则下一轮会立刻重复压缩。
+
+`v7` 实测（每约 40 秒一个周期，连续多轮无报错）：
+
+```
+14:20:37 Reached agent.max_turns ... returning control to orchestrator
+14:20:39 续接既有 codex 线程 thread_id=01a1e828-ddec-...
+14:20:40 续接前已压缩上下文 thread_id=01a1e828-ddec-... turns=30
+14:21:20 Reached agent.max_turns ...
+14:21:22 续接既有 codex 线程 thread_id=01a1e828-ddec-...
+```
+
+### 但真正的瓶颈不在上下文
+
+`v7` 上线后复盘会话文件（`~/.codex/sessions/.../rollout-*.jsonl`）：
+
+| 工单 | 轮数 | 工具调用 |
+|---|---|---|
+| SF-83323 | 1 | 37 |
+| SF-83324 | 123 | 4 |
+
+SF-83324 的 assistant 消息只有「我先读善治历史和本地 workpad」「确认是首次处理，我会先看
+截图」这类**只表态、不调工具**的话，于是每轮 1 秒结束，30 轮 40 秒烧完。
+清掉线程映射、重启 Pod 全新开始后仍然是 123 轮 / 4 次工具——**说明与 resume 无关，
+也不只是这一条线程的问题，而是该任务 + `local-glm5.3` 的组合让模型不出工具调用**。
+
+结论：resume + compact 解决了「每轮从零重来」的浪费，但**无法解决模型空转**。
+若该工单仍要跑通，需要换更强的模型（或改该单的处理路径）；单纯调大 `max_turns`、
+继续调续接策略都只是延长空转。

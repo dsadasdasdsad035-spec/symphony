@@ -1738,11 +1738,102 @@ defmodule SymphonyElixir.AppServerTest do
       assert {:ok, "expected-id"} =
                AppServer.extract_thread_id_for_test(%{"unexpected" => true}, "expected-id")
     end
+
+    test "压缩完成后才允许开工，且轮数计数归零", %{
+      workspace_root: workspace_root,
+      workspace: workspace,
+      codex_binary: codex_binary,
+      trace_file: trace_file
+    } do
+      # thread/compact/start 只是「已开始」；不发 thread/compacted 就当成还没压完。
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_RESUME_TRACE:-/tmp/codex-compact.trace}"
+
+      while IFS= read -r line; do
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$line" in
+          *'"method":"thread/resume"'*)
+            printf '%s\\n' '{"id":4,"result":{"id":"thread-compact-1"}}'
+            ;;
+          *'"method":"thread/compact/start"'*)
+            printf '%s\\n' '{"id":5,"result":{}}'
+            printf 'EMIT:thread/compacted\\n' >> "$trace_file"
+            printf '%s\\n' '{"method":"thread/compacted","params":{"threadId":"thread-compact-1"}}'
+            ;;
+          *'"method":"initialize"'*)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} =
+               AppServer.start_session(workspace,
+                 resume_thread_id: "thread-compact-1",
+                 resume_turns: 30,
+                 compact_after_turns: 30
+               )
+
+      AppServer.stop_session(session)
+
+      # 压缩过就把累计轮数清零，否则下一轮会立刻再次触发压缩
+      assert session.turns_base == 0
+
+      assert "thread/compact/start" in traced_methods(trace_file)
+      assert "EMIT:thread/compacted" in traced_order(trace_file)
+    end
+
+    test "压缩迟迟不结束时报错，不硬发 turn/start", %{
+      workspace_root: workspace_root,
+      workspace: workspace,
+      codex_binary: codex_binary
+    } do
+      # 只回「已开始」，永远不发完成通知；把 turn 超时压到 300ms 让用例快速结束。
+      write_fake_codex!(
+        codex_binary,
+        ~s({"id":4,"result":{"id":"thread-stuck-1"}}),
+        ~s({"id":2,"result":{"thread":{"id":"thread-stuck-1"}}}),
+        ~s({"id":5,"result":{}})
+      )
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_turn_timeout_ms: 300
+      )
+
+      assert {:error, {:compaction_incomplete, :compact_timeout}} =
+               AppServer.start_session(workspace,
+                 resume_thread_id: "thread-stuck-1",
+                 resume_turns: 30,
+                 compact_after_turns: 30
+               )
+    end
   end
 
   # 伪造 codex app-server：按 method 回应，并把收到的请求记进 trace 文件。
   # 不能用行号驱动——initialize 后面还跟着一个 initialized 通知，行号很脆。
-  defp write_fake_codex!(codex_binary, resume_response, start_response) do
+  defp write_fake_codex!(codex_binary, resume_response, start_response, compact_response \\ nil) do
+    compact_branch =
+      if is_binary(compact_response) do
+        """
+              *'"method":"thread/compact/start"'*)
+                printf '%s\\n' '#{compact_response}'
+                ;;
+        """
+      else
+        ""
+      end
+
     File.write!(codex_binary, """
     #!/bin/sh
     trace_file="${SYMP_TEST_RESUME_TRACE:-/tmp/codex-resume.trace}"
@@ -1757,7 +1848,7 @@ defmodule SymphonyElixir.AppServerTest do
         *'"method":"thread/start"'*)
           printf '%s\\n' '#{start_response}'
           ;;
-        *'"method":"initialize"'*)
+    #{compact_branch}    *'"method":"initialize"'*)
           printf '%s\\n' '{"id":1,"result":{}}'
           ;;
         *)
@@ -1767,6 +1858,10 @@ defmodule SymphonyElixir.AppServerTest do
     """)
 
     File.chmod!(codex_binary, 0o755)
+  end
+
+  defp traced_order(trace_file) do
+    trace_file |> File.read!() |> String.split("\n", trim: true)
   end
 
   defp traced_methods(trace_file) do

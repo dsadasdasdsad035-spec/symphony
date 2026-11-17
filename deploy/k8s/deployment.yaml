@@ -32,7 +32,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: symphony
-          image: harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v6
+          image: harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v7
           imagePullPolicy: IfNotPresent
           securityContext:
             # 直接以 1000 运行：Claude Code 的 --dangerously-skip-permissions 拒绝 root，
