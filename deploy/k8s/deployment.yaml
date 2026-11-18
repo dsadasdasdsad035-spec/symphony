@@ -88,6 +88,17 @@ spec:
             - name: release
               mountPath: /opt/symphony-release
               readOnly: true
+            # skill 从 ConfigMap 挂进来（不再只靠镜像里烘的那份）：改提示词不用
+            # 重建镜像，apply 后 kubelet 同步即生效。三个 CLI 各有 skills 目录。
+            - name: skills
+              mountPath: /home/symphony/.codex/skills/iidp-smoke
+              readOnly: true
+            - name: skills
+              mountPath: /home/symphony/.claude/skills/iidp-smoke
+              readOnly: true
+            - name: skills
+              mountPath: /home/symphony/.cursor/skills/iidp-smoke
+              readOnly: true
           startupProbe:
             # escript 启动 + entrypoint 生成各 CLI 配置，冷启动约 20~40 秒；
             # 首次拉 1.6GB 镜像另有 image pull 时间，不占用这个预算。
@@ -141,3 +152,8 @@ spec:
           configMap:
             name: symphony-release
             defaultMode: 0755
+        # skill 内容只有 SKILL.md，0644 足够（只读）。
+        - name: skills
+          configMap:
+            name: symphony-skills
+            defaultMode: 0644

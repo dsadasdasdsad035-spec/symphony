@@ -53,6 +53,25 @@ apply_release_script() {
   log "publish_dev.sh + 冒烟脚本已同步到 ConfigMap symphony-release（挂到 /opt/symphony-release）"
 }
 
+# skill 也走 ConfigMap。原先它是烘进镜像的（Dockerfile 里 COPY 到三个 CLI 的
+# skills 目录），结果是改一句提示词就得重建并推送镜像——一次十分钟起步，而且
+# 跑着的 Pod 在滚动前仍读旧内容。挂成 ConfigMap 后改完 apply 即生效。
+# 三个 CLI 各有自己的 skills 目录，同一个 ConfigMap 挂三处。
+apply_skills() {
+  local skill_dir="${HERE}/../skills/iidp-smoke"
+  [ -f "${skill_dir}/SKILL.md" ] || die "缺少 ${skill_dir}/SKILL.md"
+  kubectl create namespace "${NS}" 2>/dev/null || true
+  kubectl create configmap symphony-skills -n "${NS}" \
+    --from-file=SKILL.md="${skill_dir}/SKILL.md" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  log "iidp-smoke skill 已同步到 ConfigMap symphony-skills（三个 CLI 目录）"
+}
+
+if [ "${1:-}" = "--skills-only" ]; then
+  apply_skills
+  exit 0
+fi
+
 if [ "${1:-}" = "--workflow-only" ]; then
   apply_workflow
   exit 0
@@ -131,6 +150,7 @@ fi
 # ---------------------------------------------------------------------------
 apply_workflow
 apply_release_script
+apply_skills
 kubectl apply -k "${HERE}" -n "${NS}"
 
 log "等待滚动完成（首次需要拉取约 1.6GB 镜像）"
