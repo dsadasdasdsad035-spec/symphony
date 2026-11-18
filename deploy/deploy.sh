@@ -70,10 +70,14 @@ load_env() {
     esac
     key="$(printf '%s' "${key}" | tr -d '[:space:]')"
     [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    # 去掉可能存在的引号
+    # 去掉了引号后判断当前是否已有非空值
     value="${value%\"}"; value="${value#\"}"
     value="${value%\'}"; value="${value#\'}"
-    export "${key}=${value}"
+    # 已显式导出的环境变量优先于 .env：命令行传参能盖过 .env 里的旧值
+    # （否则 `TARGET_PLATFORM=linux/amd64 ./deploy.sh build` 会被 .env 的 arm64 悄悄吃掉）
+    if [ -z "$(eval "printf '%s' \"\${${key}:-}\"")" ]; then
+      export "${key}=${value}"
+    fi
   done < "${ENV_FILE}"
 }
 
@@ -138,7 +142,9 @@ cmd_build() {
   [ "${PULL:-0}" = "1" ] && args+=(--pull)
   [ "${NO_CACHE:-0}" = "1" ] && args+=(--no-cache)
   log "构建镜像 ${IMAGE_NAME:-symphony-agent}:${IMAGE_TAG:-latest}"
-  compose build "${args[@]}"
+  # set -u 下空数组展开在 bash 3.2（macOS 自带）会报 unbound variable，
+  # 用 ${arr[@]+...} 兼容写法，避免「不加 --pull 就构建失败」。
+  compose build ${args[@]+"${args[@]}"}
   log "构建完成"
 }
 

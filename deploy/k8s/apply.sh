@@ -33,17 +33,24 @@ apply_workflow() {
   log "WORKFLOW.md 已同步到 ConfigMap（Symphony 1 秒内热加载）"
 }
 
-# 开发环境发版脚本也走 ConfigMap：19K，远低于 1MiB 的上限，且改脚本不用重建镜像。
-# 挂载用目录方式（非 subPath）才能随 ConfigMap 更新刷新；只读卷靠
-# deployment.yaml 里的 defaultMode: 0755 拿到可执行位，不依赖 chmod。
+# 开发环境发版脚本与冒烟脚本也走 ConfigMap：脚本都很小（十九 K / 二十 K），远低于
+# 1MiB 上限，且改脚本不用重建镜像。挂载用目录方式（非 subPath）才能随 ConfigMap
+# 更新刷新；只读卷靠 deployment.yaml 里的 defaultMode: 0755 拿到可执行位，
+# 不依赖 chmod。
 apply_release_script() {
   local script="${HERE}/../publish_dev.sh"
+  local smoke_api="${HERE}/../smoke_api.sh"
+  local smoke_test="${HERE}/../smoke_test.sh"
   [ -f "${script}" ] || die "缺少 ${script}"
+  [ -f "${smoke_api}" ] || die "缺少 ${smoke_api}"
+  [ -f "${smoke_test}" ] || die "缺少 ${smoke_test}"
   kubectl create namespace "${NS}" 2>/dev/null || true
   kubectl create configmap symphony-release -n "${NS}" \
     --from-file=publish_dev.sh="${script}" \
+    --from-file=smoke_api.sh="${smoke_api}" \
+    --from-file=smoke_test.sh="${smoke_test}" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  log "publish_dev.sh 已同步到 ConfigMap symphony-release（挂到 /opt/symphony-release）"
+  log "publish_dev.sh + 冒烟脚本已同步到 ConfigMap symphony-release（挂到 /opt/symphony-release）"
 }
 
 if [ "${1:-}" = "--workflow-only" ]; then

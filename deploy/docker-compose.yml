@@ -12,7 +12,9 @@ services:
         CODEX_VERSION: ${CODEX_VERSION:-latest}
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
         ZCODE_CLI_PKG: ${ZCODE_CLI_PKG-https://github.com/xhqing/zcode-cli/releases/download/v3.8.1-32/zcode-cli-3.8.1-32.tgz}
-        CURSOR_INSTALL_URL: ${CURSOR_INSTALL_URL:-https://cursor.com/install}
+        # 用 ${VAR-default}（不是 :-default）：空字符串也能生效，
+        # 否则 .env 里置空会被静默替换回默认地址，"跳过安装"永远触发不了。
+        CURSOR_INSTALL_URL: ${CURSOR_INSTALL_URL-https://cursor.com/install}
         SHANZHI_MCP_REPO: ${SHANZHI_MCP_REPO-http://192.168.175.55:9888/mijiuye/shanzhi_mcp.git}
         SHANZHI_MCP_REF: ${SHANZHI_MCP_REF:-master}
     container_name: ${CONTAINER_NAME:-symphony}

@@ -280,7 +280,9 @@ cat out/symphony-workpad.md 2>/dev/null || echo "（无 workpad，本轮新建�
    规格隔离、SDK 变更链、引擎联调）。
 3. 工作区已经克隆好业务仓库。只改工作区里的文件，不要碰工作区之外的路径。
 4. 改动要最小化：只修复当前 Bug 相关的问题，不做顺手重构，不扩大范围。
-5. 必须自己验证：编译、单测或可复现步骤至少要跑通一项，并把结果写进备注。
+5. 必须自己验证，但**只有开发环境的冒烟才算验证**：编译、单测、本地 dev server 都
+   不能替代（详见「冒烟」一节）。修复发到 `:30669` 后，必须留一次真实冒烟证据，
+   或按该节要求写明具名豁免；两者都没有就不许 resolve。
 6. 轮次快用完时，**务必先把 `out/symphony-workpad.md` 更新到最新**再结束本轮。
    宁可少改一行代码，也不要让下一轮从零开始。
 7. 写善治备注只走五个关键节点（见上一节），不要每个阶段都写——会把操作历史刷成噪音。
@@ -460,6 +462,10 @@ Symphony 只会把「状态=激活 且 确认=是」的 Bug 派给你，说明�
 4. 改完推送**同一个分支名**，GitLab 会自动更新原 MR。**严禁再建新 MR**，
    否则评审历史会被割裂。
 5. 结论里写清楚「本轮针对哪条评审意见做了什么修改」，并复用原 MR 链接。
+6. **返工后必须重跑冒烟**。上一轮的冒烟证据只对上一轮的产物有效：返工改了代码、
+   重新发版后环境上是新产物，旧证据不再代表现状。不能沿用，也不能只补一句
+   「已按评审意见修改」就 resolve——按「冒烟」一节重新跑，并在证据里体现
+   本轮发布版本号。
 
 找不到该分支（例如已被清理）时才按首次流程重新创建。
 
@@ -501,12 +507,15 @@ Symphony 只会把「状态=激活 且 确认=是」的 Bug 派给你，说明�
   1. **合并跟踪分支并推送**——`publish_dev.sh` 会自动做，也可手工
      `git merge origin/<跟踪分支>` 后推送，让评审看到的代码与发版所用代码一致。
   2. **发布到开发环境**——见下一节「发布到开发环境」。
-  3. **核对环境**——脚本退出码为 0 才算发版成功；它已在末尾复核市场行与已安装行的
+  3. **对着开发环境冒烟**——见「冒烟」一节。界面类缺陷必须有界面层证据，
+     只有接口层的结论无效。
+  4. **核对环境**——脚本退出码为 0 才算发版成功；它已在末尾复核市场行与已安装行的
      version + md5。仍建议把报告里的版本号写回备注，便于人工比对。
-  4. **`shanzhi_resolve_bug` 置为「已解决」**（`resolution` 默认 `fixed`，
-     `comment` 写明 MR 链接 + 环境地址 + 发布的 app 与版本号）。
+  5. **`shanzhi_resolve_bug` 置为「已解决」**（`resolution` 默认 `fixed`，
+     `comment` 写明 MR 链接 + 环境地址 + 发布的 app 与版本号 + 冒烟证据五字段）。
      不要置为「已关闭」：「已解决」在 Symphony 里等价于 `In Review`，agent 停下、
      工作区保留等待人工验收；「已关闭」是终止状态，会立即停止 agent 并删除工作区。
+     冒烟失败或未冒烟且未豁免时，**不许走这一步**——改用 `shanzhi_remark_bug` 记录后结束本轮。
 
 - 先用 `shanzhi_remark_bug` 把「改动清单 + 各仓库 MR 链接 + 发版结果」写回操作历史，
   再调用 `shanzhi_resolve_bug`。
@@ -540,11 +549,216 @@ app（只发这些，不发全量）、缺依赖时 `npm ci`，最后交给既�
 发版失败时只用 `shanzhi_remark_bug` 写清失败原因、退出码和日志路径，
 把 Bug 留在「处理中」，不要 resolve。
 
+## 冒烟：在开发环境验过才能 resolve
+
+「编译通过 / 单测绿 / 本地 dev server 跑通」**都不算冒烟**。冒烟的定义是
+**对着已发版的开发环境（`http://192.168.181.104:30669`）跑一次真实调用**，
+并留下人可以复核的证据。没有这一段的修复不许 resolve——人工验收第一眼看的就是它。
+
+### 选哪一层
+
+两层**都跑同一个入口** `deploy/smoke_test.sh`，跑的是 `iidp_uitest` 仓库里的 pytest 用例；
+层级由用例路径决定，脚本自己判并写在结果里。
+
+| 缺陷性质 | 用例放哪 | 说明 |
+|---|---|---|
+| 数据错误、接口返回异常、状态流转 | `testcase/api/iidp/test_*.py` | 纯 requests 直连 RPC，**不启浏览器**，秒级出结果 |
+| 点击、切换、弹窗、渲染、样式等界面行为 | `testcase/iidp/iidp/test_*.py` | 走 `drivers` fixture 起无头浏览器 | 
+| 两层都不适用 | 声明豁免 | 见下方「豁免」 |
+
+界面类缺陷只用接口层验证等于没验：接口 200 只证明后端逻辑通，界面上该渲染的没渲染、
+按钮该亮还是灰的，这些不会出现在接口响应里。
+
+### 用例仓库 `iidp_uitest`
+
+`http://192.168.175.55:9888/xuchunxia/iidp_uitest.git`（约 1.1G，脚本自动浅克隆到
+`$SYMPHONY_WORKSPACE_ROOT/.uitest`，跨 issue 复用，**不要每个 bug 重拉**）。
+
+为什么用它而不是自己拼 curl / 场景 JSON：
+
+- 元素定位统一维护在 `data/iidp/elements`（实测 1957 条），改版式只改一处；
+- 页面方法库按域拆好（`api_iam` / `api_meta_app` / `api_workflow` / `api_tenant`…），
+  写用例是拼装现成方法，不是造轮子；
+- pytest 原生断言 + Allure 报告 + 失败 trace / DOM / GIF 留证，评审能复跑同一条命令；
+- 用例提交后可复用，下一轮同类缺陷直接跑现成的。
+
+**写用例是 Agent 的活**：按缺陷路径写 1~5 条核心步骤（登录 → 复现路径 → 断言），
+提交到 uitest 仓库分支并提 MR，评审能看到验证逻辑本身。跑完即弃的临时脚本不算沉淀。
+
+写用例前先读 skill `iidp-smoke`（容器内 `~/.codex/skills/iidp-smoke/SKILL.md`，
+claude / cursor 同样在各自 skills 目录下）。它讲清了目录约定、最小骨架、
+方法选型怎么查、断言该怎么写。别凭印象拼 API——`page_api` 有几百个方法，
+`stacks/iidp/skills/SKILL.md` 的「场景 → 方法快速决策表」才是选型依据。
+
+```bash
+# 缓存目录就是一份正常检出，直接在里面建分支写用例（首次跑 smoke_test.sh 会自动克隆）
+cd "${SYMPHONY_WORKSPACE_ROOT:-$HOME/.cache}/.uitest"
+git checkout -b smoke/<善治缺陷号>-<简短描述>
+# 写 testcase/api/iidp/... 或 testcase/iidp/iidp/... 之后：
+git add -A && git commit -m "test: <缺陷号> <验的是什么行为>"
+git push -u origin HEAD
+# 再到 GitLab 提 MR，链接贴进 resolve 备注
+```
+
+- 分支名带缺陷号，评审时能对上号；MR 被合入后，后续同类缺陷直接跑现成用例。
+- 缓存的默认分支会被别人 `git pull` 更新，**你的用例写在分支上，别混进默认分支**。
+- 同一份缓存多 Agent 共用，脚本运行期间会加 `flock` 串行化；你手工改代码时
+  如果正撞上别的冒烟在跑，等它结束再提交。
+
+### 界面层用例（UI）
+
+```python
+# -*- coding: utf-8 -*-
+import allure
+
+@allure.feature("应用市场")
+class Test_App_Store:
+
+    def test_search_after_fix(self, drivers):
+        page, api, cdp = drivers          # drivers 已按 conf 里的 host 打开页面
+        assert api.login_if_needed('implementer', 'Implementer_2023')
+        api.click_menu('应用管理', '已安装应用')   # 页面方法库，别自己写 xpath
+        ret = api.search_app_installed('sie-iidp-de-tool')
+        assert ret, "搜索后没拿到应用行"
+```
+
+- 账号口令已被脚本注入配置，用例里正常调用即可；不要写死口令。
+- 登录用 `login_if_needed`（幂等），不要用 `login`（非幂等，重复调用会卡在等登录页）。
+- 元素优先用 `data/iidp/elements` 里的 index 引用，其次用页面方法库，
+  最后才写裸选择器——裸选择器改版就碎。
+- `report/screenshot`、`report/trace`、`report/dom` 是仓库自己的取证目录（gitignored）；
+  脚本只把**本次运行新增**的产物捞进证据目录，不会混入历史失败现场。
+
+### 接口层用例（API）
+
+```python
+# -*- coding: utf-8 -*-
+import base64
+import requests
+import pytest
+from tools.operate_config import OperateConfig
+
+@pytest.mark.api
+def test_meta_app_search_after_fix():
+    conf = OperateConfig()
+    env = conf.get_node_value('ENV', 'env')
+    login_url = conf.get_node_value(env, 'login_url')   # 由 host 派生，不用手拼
+    api_url = conf.get_node_value(env, 'api_url')
+    ...
+```
+
+- **必须在 `testcase/api/` 下**：conftest 的 `_is_non_ui_test` 靠这个前缀跳过浏览器、
+  trace、GIF 和失败截图钩子；放错目录会白起一个浏览器（慢，且可能撞登录时序）。
+- 口令要 base64：`base64.b64encode(pwd.encode()).decode()`；明文会被判 -32602。
+- `login_url` / `api_url` / `upload_api_url` 都从 `host` 派生，别在用例里写死地址。
+- 查询类 RPC 要带 `properties`：实测 `meta_app.search` 不带 `properties` 恒回空数组
+  （接口 200 无报错），断言行数才拦得住这种"假通过"。
+
+### 跑冒烟
+
+```bash
+# 接口层
+smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py --expect-version <版本>
+
+# 界面层
+smoke_test.sh --case testcase/iidp/iidp/test_xxx_smoke.py::Test_X::test_y --expect-version <版本>
+```
+
+脚本名在 `PATH` 里（`/opt/symphony-release/smoke_test.sh`，也可用 `$SMOKE_TEST_SH`）。
+参数不对时加 `--help`，别猜。
+
+**界面层用例跑之前会自动过一遍 `selfcheck.py`**（uitest 仓库自带）：它客观扫描原生定位
+（`page.locator` / `.fill` / `.text_content`）、`test_` 方法里没有 `assert`、行内按钮
+方法误用这几类。命中就拒跑、退出码 1，日志在证据目录的 `selfcheck.log`。
+这类用例即使跑绿也证明不了缺陷修好——它可能压根没碰真实的页面元素。
+接口层不跑这项（不碰页面，检不出来也检不出错）。
+
+- **版本先行校验**：`--expect-version` 先查环境上该应用的市场行/已安装行版本，
+  不一致就轮询等待（默认 300s），超时退出码 3 且**不进入用例执行**、不产出截图——
+  免得把旧产物的截图当成本次的证据。发版是异步的，跑早了只会验到旧产物。
+- `--version-app` 要选**带版本号的应用**：`sie-iidp-app-store` 这类基础应用的
+  `version` 恒为 `null`，拿它做默认值只会每次都降级；实测可用的有
+  `sie-iidp-de-tool`（`1.0.0`）、`sie-iidp-iam`（`v3.1.0-RELEASE`）。
+- 版本接口读不到时脚本降级为固定等待，并在结果里注明「版本未经校验」；
+  这种情况下**不要**把结论写成「已验证新版本生效」。
+
+版本校验用的接口（需要手工核对时照这个查；`app` 固定 `sie-iidp-app-store`）：
+
+| 用途 | model | service | 关键字段 |
+|---|---|---|---|
+| 应用市场行 | `meta_app_store` | `search` | `result.data[].version`（`filter: [["name","=","<应用名>"]]`） |
+| 已安装行 | `meta_app` | `search` | `result.data[].version` |
+
+脚本先读市场行，读不到再读已安装行。少数应用（如 `sie-iidp-app-store` 自身）
+`app.json` 不带 `version`，两行都会是 `null`——`--version-app` 别选它，
+选 `sie-iidp-de-tool` / `sie-iidp-iam` 这类有版本号的，否则只能走「版本未经校验」的降级路径。
+
+### `smoke_api.sh`（内部工具，不是冒烟入口）
+
+容器里还有一个 `smoke_api.sh`：单条 RPC 的一次性校验器。它只做两件事——
+给 `smoke_test.sh` 读版本号、以及你手工排查接口时快速打一枪。**不要**用它充当接口层冒烟：
+它没有断言设计、不会沉淀用例、也不能复跑。
+
+```bash
+smoke_api.sh                    # 只验登录（连通性基线）
+smoke_api.sh --model meta_app --service search --app sie-iidp-app-store \
+  --min-rows 1 \
+  --args '{"useDisplayForModel":true,"filter":[["name","=","sie-iidp-de-tool"]],
+           "limit":5,"properties":["name","version","state"]}'
+```
+
+### 实测坑（踩过的，别再踩）
+
+| 现象 | 原因 | 正确做法 |
+|---|---|---|
+| `-32602 用户名或密码错误` | 口令传了明文 | 口令必须 base64 |
+| `400 No app info in local and remote, invoke appName: <模型>.backend` | RPC 的 `app` 填了模型名 | `app` 填真实应用名（如 `sie-iidp-app-store`），`tag` 用 `master` |
+| `search` 恒返回 `data: []`，但接口 200 无报错 | 入参缺 `properties` | 查询类必须带 `properties`（以及 `useDisplayForModel`），并断言 `len(data) >= 1` |
+| UI 用例报 `Timeout waiting for #container_meta_header_logo` | 浏览器能打开但没登录成功（口令/租户不对） | 先单跑登录探针确认账号可用，再跑业务用例 |
+| 接口用例也起了浏览器、跑得很慢 | 用例没放在 `testcase/api/` 下 | 挪到 `testcase/api/iidp/`，conftest 才会跳过浏览器 |
+| 用例里 `login()` 卡在等登录页 | `login()` 非幂等，已登录状态下会误输入 | 用 `login_if_needed()`（双向探测，已登录则跳过） |
+| 每次冒烟都提示「版本未经校验」，构建却确实换了版本 | `--version-app` 指向了 `version` 恒为 null 的应用 | 换成 `sie-iidp-de-tool`、`sie-iidp-iam` 这类有版本号的 |
+| 克隆 uitest 很慢或失败 | 仓库 1.1G，全量克隆更慢 | 脚本已用 `--depth 1 --single-branch`；仍失败就检查到 `192.168.175.55:9888` 的网络与权限 |
+
+### 冒烟证据（写进 resolve 的 comment）
+
+字段固定，缺一项就视为没有有效证据：
+
+```
+冒烟类型: 接口 / 界面
+目标地址: http://192.168.181.104:30669/...
+场景描述: <一句话：验的是什么行为>
+结果: 通过 / 失败
+证据引用: <命令 + 关键响应片段> 或 <截图路径 + Console/网络日志路径 + 报告路径>
+```
+
+两个脚本末尾都会打印「== 冒烟结果 ==」五字段，照着贴即可。
+
+### 冒烟失败怎么办
+
+- **不 resolve**。用 `shanzhi_remark_bug` 记录：失败判据、实际输出或截图路径、日志路径。
+- Bug 留在「处理中」，下一轮继续。
+- 真回归就改代码；环境或数据导致的问题在备注里写清，别硬 resolve。
+
+### 豁免：确实覆盖不了
+
+无法冒烟时，必须在 resolve 的 comment 里写豁免段落，**原因只能从这四个里选**：
+
+1. 界面在宿主内无法直达（微前端只经特定入口挂载，没有独立地址可驱动）
+2. 需要特定环境数据（特定租户 / 账号 / 数据状态，环境不具备）
+3. 不可稳定复现（偶发；写清已尝试的复现手段）
+4. 其他（必须具体说明，不接受「时间不够」「比较麻烦」这类表述）
+
+豁免段落必须包含**替代验证**（做了什么、结论是什么）。只写「无法冒烟」不算。
+
+
+
 ## 各仓库的 GitLab 项目路径
 
 | 目录 | GitLab project path（URL 编码后） | 跟踪分支 |
 |---|---|---|
 | `.`（根） | `mijiuye%2Fiidp-aios` | `master` |
+| `.uitest/`（冒烟用例仓库） | `xuchunxia%2Fiidp_uitest` | `master` |
 | `sie-snest/` | `ipaas%2Fsie-snest` | `feat_sse` |
 | `sie-snest-sdk/` | `ipaas%2Fsie-snest-sdk` | `feat-aios` |
 | `iidp-backend-demo-ai/` | `mijiuye%2Fiidp-backend-demo-ai` | `aios-test-lj` |

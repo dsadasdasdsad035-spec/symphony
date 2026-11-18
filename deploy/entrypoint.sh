@@ -125,6 +125,17 @@ else
   log "提示: 未挂载发版脚本（/opt/symphony-release/publish_dev.sh），开发环境发版不可用"
 fi
 
+# 冒烟脚本同样是 ConfigMap 挂载。这里补进 PATH，WORKFLOW.md 里就能直接写
+# `smoke_test.sh` / `smoke_api.sh`，不必让 agent 记绝对路径。
+if [ -f /opt/symphony-release/smoke_api.sh ]; then
+  export PATH="/opt/symphony-release:${PATH}"
+  export SMOKE_API_SH="/opt/symphony-release/smoke_api.sh"
+  export SMOKE_TEST_SH="/opt/symphony-release/smoke_test.sh"
+  log "冒烟脚本已就绪: ${SMOKE_API_SH}"
+else
+  log "提示: 未挂载冒烟脚本（/opt/symphony-release/smoke_api.sh），冒烟不可用"
+fi
+
 git config --global user.name "${GIT_AUTHOR_NAME:-Symphony Agent}"
 git config --global user.email "${GIT_AUTHOR_EMAIL:-symphony-agent@localhost}"
 git config --global init.defaultBranch main
