@@ -237,7 +237,10 @@ smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py \
   --publish-report --gl-project <代码仓库项目路径> --mr <MR 序号>
 ```
 
-- `--gl-project` 是**代码仓库**（如 `mijiuye/iidp-aios`），不是 uitest。
+- `--gl-project` 是**本次修复代码所在的子仓库**（如 `ipaas/sie-snest`、
+  `mijiuye/iidp-aios`），**不能是 uitest**——发到用例仓库，改代码的 MR 里就没有
+  验证证据，脚本会直接拒绝。
+- 改了多个仓库时发给承载该缺陷的那个，其余 MR 里贴一行链接指回该评论。
 - 脚本会把报告作为评论发出，截图先上传成 GitLab 的 `/uploads/...` 图，评论里直接显示。
 - 同时生成 `evidence.html`：一段带结论、版本、耗时、评论链接和 MR 链接的 HTML，
   整段作为 `shanzhi_remark_bug` 的 comment 即可。

@@ -217,6 +217,17 @@ fi
 GL_PROJECT="${GL_PROJECT%.git}"
 GL_PROJECT="${GL_PROJECT#/}"
 GL_PROJECT="${GL_PROJECT%/}"
+
+# 用例仓库的项目路径（从 REPO_URL 推导，如 xuchunxia/iidp_uitest）。
+# 用来挡一个很自然的错误：用例在 uitest，顺手就把 --gl-project 也填成 uitest。
+# 报告必须贴着**代码**走——发到用例仓库，评审看 diff 时根本看不到它。
+UITEST_PROJECT="$(printf '%s' "$REPO_URL" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]+/##; s#\.git$##; s#/+$##')"
+if [ -n "$GL_PROJECT" ] && [ "$GL_PROJECT" = "$UITEST_PROJECT" ]; then
+  die 2 "--gl-project 指向了用例仓库 ${UITEST_PROJECT}。
+  报告要发到**本次修复代码所在的子仓库**（如 mijiuye/iidp-aios、ipaas/sie-snest），
+  否则评审看该仓库的 MR 时找不到冒烟证据。"
+fi
+
 [ -n "$MR_IID" ] && [ -n "$GL_PROJECT" ] \
   && MR_WEB_URL="${GL_BASE}/${GL_PROJECT}/merge_requests/${MR_IID}"
 

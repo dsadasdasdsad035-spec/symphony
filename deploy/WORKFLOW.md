@@ -752,8 +752,11 @@ smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py \
   --gl-project <代码仓库项目路径> --mr <MR 序号>
 ```
 
-- `--gl-project` 用**代码仓库**的路径（如 `mijiuye/iidp-aios` 或 `ipaas/sie-snest`），
-  不是 uitest 仓库。
+- `--gl-project` 用**本次修复代码所在的子仓库**路径，如 `ipaas/sie-snest`、
+  `ipaas/sie-snest-sdk`、`mijiuye/iidp-aios`。**绝不能填 uitest**（`xuchunxia/iidp_uitest`）：
+  那是用例仓库，把报告发过去，改代码的 MR 里就看不到任何验证证据，脚本会直接拒绝。
+- 一个 bug 改了多个仓库时，发给**承载该缺陷的那个仓库**的 MR（bug 描述里点名的
+  应用/服务在哪边，就发哪边）；其余仓库的 MR 里用一行链接指回这条评论。
 - 报告正文作为评论发出：结论、版本校验、每条用例的耗时与结果、失败原文、截图。
   截图先经 GitLab uploads 接口上传成 `/uploads/...`，评论里是 GitLab 自己的图片，
   登录团队可见，不会出现破图。
