@@ -512,9 +512,9 @@ Symphony 只会把「状态=激活 且 确认=是」的 Bug 派给你，说明�
   4. **核对环境**——脚本退出码为 0 才算发版成功；它已在末尾复核市场行与已安装行的
      version + md5。仍建议把报告里的版本号写回备注，便于人工比对。
   5. **`shanzhi_resolve_bug` 置为「已解决」**（`resolution` 默认 `fixed`，
-     `comment` 写明 MR 链接 + 环境地址 + 发布的 app 与版本号 + 冒烟证据五字段）。
-     不要置为「已关闭」：「已解决」在 Symphony 里等价于 `In Review`，agent 停下、
-     工作区保留等待人工验收；「已关闭」是终止状态，会立即停止 agent 并删除工作区。
+     `comment` 写明 MR 链接 + 环境地址 + 发布的 app 与版本号 + 冒烟证据五字段 +
+     **冒烟报告链接**）。不要置为「已关闭」：「已解决」在 Symphony 里等价于 `In Review`，
+     agent 停下、工作区保留等待人工验收；「已关闭」是终止状态，会立即停止 agent 并删除工作区。
      冒烟失败或未冒烟且未豁免时，**不许走这一步**——改用 `shanzhi_remark_bug` 记录后结束本轮。
 
 - 先用 `shanzhi_remark_bug` 把「改动清单 + 各仓库 MR 链接 + 发版结果」写回操作历史，
@@ -658,11 +658,15 @@ def test_meta_app_search_after_fix():
 
 ```bash
 # 接口层
-smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py --expect-version <版本>
+smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py --expect-version <版本> --publish-report
 
 # 界面层
-smoke_test.sh --case testcase/iidp/iidp/test_xxx_smoke.py::Test_X::test_y --expect-version <版本>
+smoke_test.sh --case testcase/iidp/iidp/test_xxx_smoke.py::Test_X::test_y --expect-version <版本> --publish-report
 ```
+
+`--publish-report` 把报告作为评论发到代码仓库的 MR（需同时给 `--gl-project` 与 `--mr`），
+并额外生成本地 `report.md` 与 `evidence.html`（后者整段贴进善治备注）。
+工作区在 resolve 后会被销毁，**不发布报告等于人工验收时看不到任何证据**。
 
 脚本名在 `PATH` 里（`/opt/symphony-release/smoke_test.sh`，也可用 `$SMOKE_TEST_SH`）。
 参数不对时加 `--help`，别猜。
@@ -722,6 +726,10 @@ smoke_api.sh --model meta_app --service search --app sie-iidp-app-store \
 
 ### 冒烟证据（写进 resolve 的 comment）
 
+`shanzhi_remark_bug` 只能写 HTML 文本、**没有附件接口**，所以截图和详细报告放在 MR，
+善治备注里放结论摘要 + 链接。要求与 MR 链接同等对待：**没有报告链接的 resolve
+视为没有冒烟**。
+
 字段固定，缺一项就视为没有有效证据：
 
 ```
@@ -730,9 +738,35 @@ smoke_api.sh --model meta_app --service search --app sie-iidp-app-store \
 场景描述: <一句话：验的是什么行为>
 结果: 通过 / 失败
 证据引用: <命令 + 关键响应片段> 或 <截图路径 + Console/网络日志路径 + 报告路径>
+报告链接: <MR 评论链接，点开有结论/版本/用例明细/截图>
 ```
 
-两个脚本末尾都会打印「== 冒烟结果 ==」五字段，照着贴即可。
+### 报告放到 MR 评论里
+
+报告跟代码走：**用例在 iidp_uitest，验证结果发到修复那个 bug 的 MR 上**。
+评审看 diff 的地方就能看到这次冒烟验了什么，不必在两套仓库之间跳。
+
+```bash
+smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py \
+  --expect-version <版本> --publish-report \
+  --gl-project <代码仓库项目路径> --mr <MR 序号>
+```
+
+- `--gl-project` 用**代码仓库**的路径（如 `mijiuye/iidp-aios` 或 `ipaas/sie-snest`），
+  不是 uitest 仓库。
+- 报告正文作为评论发出：结论、版本校验、每条用例的耗时与结果、失败原文、截图。
+  截图先经 GitLab uploads 接口上传成 `/uploads/...`，评论里是 GitLab 自己的图片，
+  登录团队可见，不会出现破图。
+- 末尾打印 `MR评论:` 链接，就是 `报告链接` 要贴的地址。
+- 若 MR 还没建（先跑冒烟后提 MR）：不带 `--gl-project/--mr`，脚本只产出本地的
+  `report.md` 与 `evidence.html`，等 MR 建好后再跑一次带参数的。
+
+### 善治备注怎么贴
+
+`--publish-report` 会额外生成 `evidence.html`（路径见输出里的 `善治备注:`）。
+它的内容就是一段可直接用的 HTML：结论带颜色、目标环境、用例、版本校验、耗时、
+MR 评论链接、MR 链接。把它整段作为 `comment` 传给 `shanzhi_remark_bug` /
+`shanzhi_resolve_bug` 即可，不用自己拼标签。
 
 ### 冒烟失败怎么办
 

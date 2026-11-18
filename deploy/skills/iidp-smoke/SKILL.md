@@ -227,6 +227,23 @@ git push -u origin HEAD
 到 GitLab 提 MR，链接贴进 resolve 备注。分支名带缺陷号，评审能对上号；
 合入后后续同类缺陷直接跑现成用例。
 
+### 报告也要发出去（`--publish-report`）
+
+善治备注只能写 HTML 文本，没有附件接口，所以报告要跟代码走：发到**修复这个 bug 的
+MR 评论**上。用例在 uitest，验证结果贴着代码，评审在同一个 MR 里既看 diff 也看运行结果。
+
+```bash
+smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py \
+  --publish-report --gl-project <代码仓库项目路径> --mr <MR 序号>
+```
+
+- `--gl-project` 是**代码仓库**（如 `mijiuye/iidp-aios`），不是 uitest。
+- 脚本会把报告作为评论发出，截图先上传成 GitLab 的 `/uploads/...` 图，评论里直接显示。
+- 同时生成 `evidence.html`：一段带结论、版本、耗时、评论链接和 MR 链接的 HTML，
+  整段作为 `shanzhi_remark_bug` 的 comment 即可。
+- MR 还没建时不带 `--gl-project/--mr`，只产出本地 `report.md` 与 `evidence.html`；
+  工作区 resolve 后会被销毁，**交付前必须把报告发出去**。
+
 缓存目录被别人 `git pull` 更新过，**你的用例写在分支上，别提交到 master**。
 `smoke_test.sh` 运行期间对缓存目录加了 `flock`，手工改代码时若正撞上别的冒烟在跑，
 等它结束再提交。

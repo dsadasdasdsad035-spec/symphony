@@ -19,10 +19,12 @@
 #   1. 找到（必要时浅克隆）uitest 仓库，仓库 1.1G，克隆完缓存在工作区根下跨 issue 复用；
 #   2. 按环境变量生成 conf/active.ini 与 config.local.ini（口令只落 0600 临时文件，退出即删）；
 #   3. 开跑前校验环境里跑的是不是待验版本（--expect-version），避免"验了旧代码"；
-#   4. 跑完把 junit 结论 + 截图/Allure/trace 的绝对路径打出来，直接贴进善治备注。
+#   4. 跑完出人可读报告（report.md），可发到代码仓库的 MR 评论，并生成
+#      evidence.html 供善治备注（remark_bug 只收 HTML，没有附件接口）。
 #
 # 用法：
 #   smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py            # 接口层
+#   smoke_test.sh --case ... --publish-report --gl-project a/b --mr 12  # 报告发到 MR 评论
 #   smoke_test.sh --case testcase/iidp/iidp/test_xxx_smoke.py           # 界面层
 #   smoke_test.sh --case ...::Test_X::test_y --expect-version 1.0.1
 #
@@ -79,6 +81,23 @@ OUTPUT=""
 EXTRA_ARGS=()
 SCREENCAST=0
 ATTEMPTS=1
+# 1 时把 report.md + 截图提交进 uitest 当前分支：善治备注只能写 HTML 文本，
+# 不能传附件，所以报告必须落到一个能贴链接的地方（与 MR 同源最省事）。
+# 1 时生成发布产物：本地 report.md（人看）+ evidence.html（贴善治备注用），
+# 给了 --gl-project/--mr 就直接发到代码仓库的 MR 评论上。
+PUBLISH=0
+GL_PROJECT=""
+MR_IID=""
+# GitLab 站点地址：优先 $GITLAB_URL，其次从 APP_REPO_URL 推导（代码仓库就在那台），
+# 最后退回 uitest 仓库的 host——内网这几样通常同一台。
+GL_BASE=""
+MR_WEB_URL=""
+EVIDENCE_TEXT=""
+# 报告路径、MR 评论链接，以及给善治备注用的 HTML 片段。
+REPORT_MD=""
+REPORT_URL=""
+REPORT_VERDICT=""
+EVIDENCE_HTML=""
 # 版本先行校验：发版是异步的（上传 → 上架 → 更新 → 前端资源生效），
 # 跑早了验到的还是旧代码，会得到"改了却没变化"的假结论。
 EXPECT_VERSION=""
@@ -106,6 +125,10 @@ usage() {
   --host <URL>             前端地址，默认 http://192.168.181.104:30669/iidp/
   --python <解释器>        默认优先用仓库内 .venv/bin/python，否则 python3
   --output <DIR>           证据目录，默认 ./smoke-test-<时间戳>
+  --publish-report         生成可发布的报告：贴到 MR 评论需要同时给 --gl-project 与 --mr；
+                           不给就只产出本地 report.md 与 evidence.html（供善治备注用）
+  --gl-project <PATH>      代码仓库的 GitLab 项目路径（如 mijiuye/iidp-aios 或 URL 编码形式）
+  --mr <IID>               代码仓库 MR 序号；给了就把报告作为评论发到该 MR
   --screencast             开启过程动图（仅界面层有效；默认关闭，无头下帧洪峰会拖慢/拖崩浏览器）
   --attempts <N>           失败重试次数，默认 1（不做重试）
 
@@ -146,6 +169,11 @@ while [ $# -gt 0 ]; do
     --output)           OUTPUT="${2:-}"; shift 2 ;;
     --output=*)         OUTPUT="${1#*=}"; shift ;;
     --no-clone)         ALLOW_CLONE=0; shift ;;
+    --publish-report)   PUBLISH=1; shift ;;
+    --gl-project)       GL_PROJECT="${2:-}"; shift 2 ;;
+    --gl-project=*)     GL_PROJECT="${1#*=}"; shift ;;
+    --mr)               MR_IID="${2:-}"; shift 2 ;;
+    --mr=*)             MR_IID="${1#*=}"; shift ;;
     --screencast)       SCREENCAST=1; shift ;;
     --attempts)         ATTEMPTS="${2:-}"; shift 2 ;;
     --attempts=*)       ATTEMPTS="${1#*=}"; shift ;;
@@ -173,6 +201,24 @@ command -v jq >/dev/null 2>&1 || die 2 "缺少 jq（镜像内应自带；本地�
 
 CASE_FILE="${CASE%%::*}"
 resolve_layer_path
+
+# GitLab 站点地址：$GITLAB_URL 优先，其次从 APP_REPO_URL 的 scheme://host 推导，
+# 最后退回 uitest 仓库 host。发 MR 评论和拼链接都用它。
+if [ -z "$GL_BASE" ]; then
+  if [ -n "${GITLAB_URL:-}" ]; then
+    GL_BASE="${GITLAB_URL%/}"
+  elif [ -n "${APP_REPO_URL:-}" ]; then
+    GL_BASE="$(printf '%s' "$APP_REPO_URL" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*)://([^/]+).*#\1://\2#')"
+  else
+    GL_BASE="$(printf '%s' "$REPO_URL" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*)://([^/]+).*#\1://\2#')"
+  fi
+fi
+# 项目路径去掉可能带的 .git 与首尾斜杠，后面按 path 编码。
+GL_PROJECT="${GL_PROJECT%.git}"
+GL_PROJECT="${GL_PROJECT#/}"
+GL_PROJECT="${GL_PROJECT%/}"
+[ -n "$MR_IID" ] && [ -n "$GL_PROJECT" ] \
+  && MR_WEB_URL="${GL_BASE}/${GL_PROJECT}/merge_requests/${MR_IID}"
 
 # ---------------------------------------------------------------- 0. 临时文件登记
 # 这里会写两个含敏感值的文件（config.local.ini 里的口令、junit 临时文件），
@@ -468,6 +514,25 @@ run_selfcheck() {
   log "用例自检通过"
 }
 
+# 发布的前置检查放在跑用例之前：参数不全时应该立刻失败，
+# 而不是让人等完几十秒的界面用例才被通知参数写错了。
+preflight_publish() {
+  [ "$PUBLISH" = "1" ] || return 0
+  if [ -n "$MR_IID" ] || [ -n "$GL_PROJECT" ]; then
+    [ -n "$MR_IID" ] && [ -n "$GL_PROJECT" ] \
+      || die 2 "--gl-project 与 --mr 必须成对给出（只给一个无法定位评论目标）"
+    case "$MR_IID" in
+      ''|*[!0-9]*) die 2 "--mr 需要 MR 序号（纯数字），收到: $MR_IID" ;;
+    esac
+    [ -n "${GITLAB_TOKEN:-${GIT_TOKEN:-}}" ] \
+      || die 2 "发 MR 评论需要 \$GITLAB_TOKEN（或 \$GIT_TOKEN）"
+  else
+    log "未给 --gl-project/--mr：只生成本地报告与 evidence.html，不发送到 MR"
+  fi
+}
+
+preflight_publish
+
 run_selfcheck
 
 run_pytest() {
@@ -568,10 +633,293 @@ print_result() {
   [ "$SHOT_COUNT" != "0" ] && printf '截图目录: %s（%s 张）\n' "$SHOT_DIR" "$SHOT_COUNT"
   [ -n "$TRACE_HINT" ] && printf '失败trace: %s\n' "$TRACE_HINT"
   printf '运行日志: %s\n' "$RUN_LOG"
+  [ -n "${REPORT_MD:-}" ] && printf '冒烟报告: %s\n' "$REPORT_MD"
+  [ -n "${EVIDENCE_HTML:-}" ] && printf '善治备注: %s（内容直接作为 shanzhi_remark_bug 的 comment）\n' "$EVIDENCE_HTML"
+  [ -n "${REPORT_URL:-}" ] && printf 'MR评论: %s\n' "$REPORT_URL"
+}
+
+# ------------------------------------------------------- 9. 生成人可读报告
+# junit 是给机器看的（CI 消费），善治备注里贴的必须是给人看的：结论、场景、版本、
+# 每一步的耗时、失败原文、截图。所以另出一份 report.md。
+#
+# 用 Markdown 而不是 HTML：GitLab 的 blob 页会把 .html 当源码展示（带 nosniff），
+# 打开看到的是标签；.md 则直接渲染，图片按相对路径内嵌，评审点开就是图文。
+write_report() {
+  local verdict="$1" evidence="$2"
+  local img_dir="$OUTPUT/img"
+  mkdir -p "$img_dir"
+  # 截图重排成 01-xx.png：markdown 里的顺序要稳定，不能依赖文件系统返回顺序。
+  if [ -d "$SHOT_DIR" ]; then
+    local n=0 f
+    for f in "$SHOT_DIR"/*; do
+      [ -f "$f" ] || continue
+      n=$((n + 1))
+      cp "$f" "$img_dir/$(printf '%02d' "$n")-$(basename "$f")" 2>/dev/null || true
+    done
+  fi
+  REPORT_MD="$OUTPUT/report.md"
+  SMOKE_VERDICT="$verdict" SMOKE_EVIDENCE="$evidence" \
+  SMOKE_LAYER="$LAYER" SMOKE_HOST="$HOST" SMOKE_CASE="$CASE" \
+  SMOKE_VERSION="$VERSION_NOTE" SMOKE_JUNIT="$JUNIT" SMOKE_RUNLOG="$RUN_LOG" \
+  SMOKE_IMG_DIR="$img_dir" SMOKE_STACK="$STACK" SMOKE_PRODUCT="$PRODUCT" \
+  SMOKE_TESTS="$TESTS" SMOKE_DURATION="$DURATION" \
+  "$PYTHON" - "$REPORT_MD" <<'PY' || warn "生成 report.md 失败（不影响冒烟结论）"
+import html
+import os
+import re
+import xml.etree.ElementTree as ET
+
+env = os.environ
+out = os.sys.argv[1]
+verdict = env.get("SMOKE_VERDICT", "")
+evidence = env.get("SMOKE_EVIDENCE", "")
+img_dir = env.get("SMOKE_IMG_DIR", "")
+junit = env.get("SMOKE_JUNIT", "")
+runlog = env.get("SMOKE_RUNLOG", "")
+
+lines = []
+add = lines.append
+add("# 冒烟报告：%s" % env.get("SMOKE_CASE", ""))
+add("")
+add("| 项 | 值 |")
+add("|---|---|")
+add("| 结论 | **%s** |" % verdict)
+add("| 类型 | %s 层（iidp_uitest / pytest） |" % env.get("SMOKE_LAYER", ""))
+add("| 目标环境 | %s |" % env.get("SMOKE_HOST", ""))
+add("| 版本校验 | %s |" % env.get("SMOKE_VERSION", ""))
+add("| 用例 | `%s` |" % env.get("SMOKE_CASE", ""))
+add("| 耗时 | %ss |" % env.get("SMOKE_DURATION", ""))
+add("")
+add("证据：%s" % evidence)
+add("")
+
+# 逐条用例结果：评审要看的是"验了哪几条断言"，不是一行 PASS。
+rows = []
+if junit and os.path.exists(junit):
+    try:
+        root = ET.parse(junit).getroot()
+        suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+        for s in suites:
+            for tc in s.iter("testcase"):
+                status = "通过"
+                detail = ""
+                for tag in ("failure", "error", "skipped"):
+                    node = tc.find(tag)
+                    if node is not None:
+                        status = {"failure": "失败", "error": "报错", "skipped": "跳过"}[tag]
+                        raw = (node.get("message") or node.text or "").strip()
+                        detail = re.sub(r"\s+", " ", raw)[:300]
+                        break
+                rows.append((tc.get("name", ""), tc.get("time", ""), status, detail))
+    except Exception as exc:  # 报告不能因为解析失败就整个没
+        add("> junit 解析失败：%s" % exc)
+        add("")
+
+if rows:
+    add("## 用例明细")
+    add("")
+    add("| 用例 | 耗时 | 结果 | 失败信息 |")
+    add("|---|---|---|---|")
+    for name, t, status, detail in rows:
+        add("| `%s` | %ss | %s | %s |" % (name, t, status, detail.replace("|", "\\|")))
+    add("")
+
+# 截图：相对路径，发布时 img/ 一起提交，GitLab 里直接渲染。
+if img_dir and os.path.isdir(img_dir):
+    shots = sorted(f for f in os.listdir(img_dir) if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif")))
+    if shots:
+        add("## 截图")
+        add("")
+        for f in shots:
+            add("### %s" % f)
+            add("")
+            add("![%s](img/%s)" % (f, f))
+            add("")
+
+# 失败时贴日志尾部：评审不用重跑就能看到断言原文。
+if verdict != "PASS" and runlog and os.path.exists(runlog):
+    try:
+        with open(runlog, encoding="utf-8", errors="replace") as fh:
+            tail = "".join(fh.readlines()[-120:])
+        add("## 运行日志（尾部 120 行）")
+        add("")
+        add("```")
+        add(tail.rstrip())
+        add("```")
+        add("")
+    except Exception:
+        pass
+
+add("---")
+add("")
+add("由 `smoke_test.sh` 自动生成，用例来自 iidp_uitest 仓库，可复跑同一命令。")
+
+with open(out, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(lines) + "\n")
+PY
+  [ -f "$REPORT_MD" ] || REPORT_MD=""
+}
+
+# ------------------------------------------------ 10. 发布：MR 评论 + 善治备注
+# 报告的去处不是 uitest 仓库：验证逻辑（用例）在 uitest，验证结果应该贴着**代码**
+# 走——也就是修复那个 bug 的 MR。评审看 diff 的地方就能看到这次冒烟到底验了什么。
+#
+# 善治的 remark_bug 只收 HTML 文本、没有附件接口，所以另出一份 evidence.html：
+# 里面有结论、版本、证据和 MR 评论链接，直接作为 comment 传给 shanzhi_remark_bug。
+
+# GitLab 项目路径要按 path 编码；入参可能是 a/b，也可能是已编码的 a%2Fb，
+# 先 unquote 再 quote，两种形态都能接受。
+gl_project_enc() {
+  "$PYTHON" -c 'import sys,urllib.parse;print(urllib.parse.quote(urllib.parse.unquote(sys.argv[1]),safe=""))' "$1"
+}
+
+gl_api() { printf '%s/api/v4%s' "$GL_BASE" "$1"; }
+
+# 把截图上传到项目，换成 GitLab 的 markdown 图片引用。
+# 不能直接用本地路径或 raw 链接：raw 需要登录态，评论里会显示成破图。
+publish_images() {
+  local dir="$1" out="$2" f
+  : > "$out"
+  [ -d "$dir" ] || return 0
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    case "${f##*.}" in
+      png|PNG|jpg|JPG|jpeg|JPEG|gif|GIF) ;;
+      *) continue ;;
+    esac
+    local resp
+    resp="$(curl -sS --max-time 60 --request POST \
+        -H "PRIVATE-TOKEN: ${GL_TOKEN}" \
+        --form "file=@${f}" \
+        "$(gl_api "/projects/${GL_PROJECT_ENC}/uploads")" 2>/dev/null || true)"
+    local md
+    md="$(printf '%s' "$resp" | sed -n 's/.*"markdown":"\([^"]*\)".*/\1/p')"
+    if [ -z "$md" ]; then
+      warn "截图上传失败（$(basename "$f")），评论里会缺这张图"
+      continue
+    fi
+    # JSON 里的 markdown 是转义过的，反转义 \" 和 \/
+    md="$(printf '%s' "$md" | sed -e 's/\\"/"/g' -e 's#\\/#/#g')"
+    printf '%s\n\n' "$md" >> "$out"
+  done
+}
+
+publish_report() {
+  [ -n "$REPORT_MD" ] || return 0
+  GL_TOKEN="${GITLAB_TOKEN:-${GIT_TOKEN:-}}"
+
+  # 没给 MR 时，发布就到此为止：报告留在本地，由 Agent 自己贴到 MR / 善治。
+  [ -n "$MR_IID" ] || return 0
+
+  local body_file="$OUTPUT/mr-comment.md"
+  GL_PROJECT_ENC="$(gl_project_enc "$GL_PROJECT")"
+  local img_md="$OUTPUT/.img-markdown"
+  publish_images "$OUTPUT/img" "$img_md"
+
+  # 评论正文就是报告本身，但图片要换成上传后的 markdown 引用。
+  "$PYTHON" - "$REPORT_MD" "$body_file" "$img_md" <<'PY' 2>/dev/null || cp "$REPORT_MD" "$body_file"
+import os
+import sys
+
+src, dst, img = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src, encoding="utf-8") as fh:
+    text = fh.read()
+imgs = ""
+if os.path.exists(img):
+    with open(img, encoding="utf-8") as fh:
+        imgs = fh.read().strip()
+if imgs:
+    # 本地报告里的图片是 img/xx.png，评论里换成 GitLab 上传后的地址。
+    head = text.split("## 截图")[0].rstrip()
+    tail = ""
+    if "## 运行日志" in text:
+        tail = "## 运行日志" + text.split("## 运行日志", 1)[1]
+    text = head + "\n\n## 截图\n\n" + imgs + "\n" + (("\n" + tail) if tail else "")
+with open(dst, "w", encoding="utf-8") as fh:
+    fh.write(text)
+PY
+
+  local resp note_id
+  resp="$(curl -sS --max-time 90 --request POST \
+      -H "PRIVATE-TOKEN: ${GL_TOKEN}" \
+      --data-urlencode "body@${body_file}" \
+      "$(gl_api "/projects/${GL_PROJECT_ENC}/merge_requests/${MR_IID}/notes")" 2>/dev/null || true)"
+  # 取第一个 "id"：note 响应里 id 在首位，但后面还有 author_id / award 的 id，
+  # 用 sed 的贪婪 .* 会吃到最后一个，导致链接指错评论。
+  note_id="$(printf '%s' "$resp" | grep -o '"id":[0-9]\{1,\}' | head -1 | cut -d: -f2)"
+  if [ -z "$note_id" ]; then
+    warn "发 MR 评论失败，报告只在本地：$REPORT_MD"
+    warn "接口返回：$(printf '%s' "$resp" | head -c 300)"
+    return 0
+  fi
+
+  # GitLab 11.3 用旧式路由（没有 /- 前缀），分支/MR 链接都按这个拼。
+  local web
+  web="$(printf '%s' "$GL_BASE")"
+  REPORT_URL="${web}/${GL_PROJECT}/merge_requests/${MR_IID}#note_${note_id}"
+  log "报告已发到 MR !${MR_IID}：${REPORT_URL}"
+}
+
+# 善治备注用的 HTML 片段。remark_bug 只收 HTML 文本、没有附件接口，
+# 所以这里给一段可直接当 comment 传进去的内容，含结论、版本、证据与 MR 链接。
+# 生成时机放在 MR 评论之后：这样 HTML 里能带上评论链接。
+write_evidence_html() {
+  EVIDENCE_HTML="$OUTPUT/evidence.html"
+  SMOKE_VERDICT="$REPORT_VERDICT" SMOKE_LAYER="$LAYER" SMOKE_HOST="$HOST" \
+  SMOKE_CASE="$CASE" SMOKE_VERSION="$VERSION_NOTE" SMOKE_TESTS="$TESTS" \
+  SMOKE_DURATION="$DURATION" SMOKE_EVIDENCE="$EVIDENCE_TEXT" \
+  SMOKE_URL="${REPORT_URL:-}" SMOKE_MR_URL="${MR_WEB_URL:-}" \
+  SMOKE_IMAGES="$SHOT_COUNT" \
+  "$PYTHON" - "$EVIDENCE_HTML" <<'PY' 2>/dev/null || warn "生成 evidence.html 失败"
+import html
+import os
+
+env = os.environ
+verdict = env.get("SMOKE_VERDICT", "")
+color = "#1f883d" if verdict == "PASS" else "#cf222e"
+
+parts = []
+parts.append("<p><b>冒烟结果：<span style=\"color:%s\">%s</span></b>（%s 层 · iidp_uitest / pytest）</p>"
+             % (color, html.escape(verdict), html.escape(env.get("SMOKE_LAYER", ""))))
+parts.append("<ul>")
+parts.append("<li>目标环境：%s</li>" % html.escape(env.get("SMOKE_HOST", "")))
+parts.append("<li>用例：<code>%s</code></li>" % html.escape(env.get("SMOKE_CASE", "")))
+parts.append("<li>版本校验：%s</li>" % html.escape(env.get("SMOKE_VERSION", "")))
+parts.append("<li>用例数/耗时：%s 条 / %ss</li>" % (html.escape(env.get("SMOKE_TESTS", "")),
+                                                html.escape(env.get("SMOKE_DURATION", ""))))
+parts.append("<li>证据：%s</li>" % html.escape(env.get("SMOKE_EVIDENCE", "")))
+url = env.get("SMOKE_URL", "")
+mr = env.get("SMOKE_MR_URL", "")
+if url:
+    parts.append("<li>冒烟报告：<a href=\"%s\">MR 评论里的完整报告（含截图）</a></li>"
+                 % html.escape(url))
+elif env.get("SMOKE_IMAGES", "0") != "0":
+    # 没有评论链接就明说截图在这次运行的证据目录里，别让人以为没留证。
+    parts.append("<li>说明：截图共 %s 张，随本次冒烟的证据目录留档</li>"
+                 % html.escape(env.get("SMOKE_IMAGES", "")))
+if mr:
+    parts.append("<li>MR：<a href=\"%s\">%s</a></li>" % (html.escape(mr), html.escape(mr)))
+parts.append("</ul>")
+with open(os.sys.argv[1], "w", encoding="utf-8") as fh:
+    fh.write("\n".join(parts) + "\n")
+PY
+}
+
+# 收尾：先出报告（人看），再按需发布（MR 评论 / 善治备注），最后打印五字段。
+finish() {
+  local verdict="$1" evidence="$2"
+  REPORT_VERDICT="$verdict"
+  EVIDENCE_TEXT="$evidence"
+  write_report "$verdict" "$evidence"
+  if [ "$PUBLISH" = "1" ]; then
+    publish_report
+    write_evidence_html
+  fi
+  print_result "$verdict" "$evidence"
 }
 
 if [ "$OK" = "1" ]; then
-  print_result "PASS" "pytest 通过：${TESTS} 条用例全绿，耗时 ${DURATION}s（junit 判定，不依赖日志正则）"
+  finish "PASS" "pytest 通过：${TESTS} 条用例全绿，耗时 ${DURATION}s（junit 判定，不依赖日志正则）"
   exit 0
 fi
 
@@ -581,5 +929,5 @@ SUMMARY="${FAILURES} 失败 / ${ERRORS} 错误 / ${TESTS} 总数，耗时 ${DURA
 if [ "$TESTS" = "0" ]; then
   SUMMARY="用例未执行成功（collect 阶段失败？）：$FIRST_FAIL"
 fi
-print_result "FAIL" "$SUMMARY"
+finish "FAIL" "$SUMMARY"
 exit 1
