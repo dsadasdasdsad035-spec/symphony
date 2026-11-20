@@ -176,6 +176,20 @@ $RELEASE --issue SF-83323 --apps=sie-iidp-de-tool
 
 发版失败只能 `shanzhi_remark_bug` 记备注，**不要 resolve**，否则这一轮的改动就丢了。
 
+### 冒烟与 resolve 硬闸门
+
+开发环境冒烟入口为 ConfigMap `symphony-release` 中的 `smoke_test.sh`（容器内 `smoke_test.sh`）。
+流程要点：
+
+1. 工作区 `smoke/smoke-requirement.json` 声明 `API`/`UI`/`BOTH`；
+2. 发版后对 `:30669` 跑用例，须 `--issue SF-xxxxx --publish-report`（+ `--mr-dir`/`--mr`）；
+3. 脚本写入 `smoke/smoke-pass.json`（仅 PASS 且 MR 链接非空；退出码 4 不写 PASS）；
+4. Symphony 在 `shanzhi_resolve_bug` 前读通行证（环境变量 `SMOKE_RESOLVE_GATE`，默认 `1`）。
+
+更新脚本：`cd deploy/k8s && ./apply.sh`（重建 release ConfigMap）。**改了 Elixir 闸门逻辑须重建镜像并滚动 Pod**（目标 tag **`v10`**，含 `ResolveGate`；构建失败时常见原因是 npm 装 codex 断流，可设 `NPM_REGISTRY` 镜像后重试 `docker buildx build … -t …/symphony-agent:v10 --push`）。
+
+灰度关闭闸门（仅排障）：`kubectl set env deployment/symphony -n symphony SMOKE_RESOLVE_GATE=0`。
+
 ## 部署到线上（Kubernetes / Rancher）
 
 `deploy/k8s/` 是同一份镜像在集群里的部署清单，目标集群 `rancher-gky.sie.iidp.cn`，

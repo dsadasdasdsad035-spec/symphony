@@ -61,7 +61,8 @@
 - [ ] 6.2 通过 ConfigMap 同步 `WORKFLOW.md`，确认热加载生效（`/config/WORKFLOW.md` 可见新章节）
 - [ ] 6.3 用一个真实善治 Bug 走完整流程，检查生成的解决说明里证据段落是否齐全、格式是否符合模板
 - [ ] 6.4 构造一个 UI 无法覆盖的场景，确认豁免段落含枚举原因与替代验证，而非笼统表述
-- [ ] 6.5 复盘首轮真实执行数据，判断是否具备升级为硬闸门的条件，并把结论写回 `openspec/changes/smoke-before-resolve/design.md` 的风险表
+- [x] 6.5 复盘首轮真实执行数据，判断是否具备升级为硬闸门的条件，并把结论写回 `openspec/changes/smoke-before-resolve/design.md` 的风险表
+  - 结论：已由变更 `smoke-hard-gate-ui-mandatory` 落地硬闸门（`ResolveGate` + `smoke-pass.json` + WORKFLOW 八段式）；软闸门阶段结束。
 
 ## 7. 冒烟统一到 iidp_uitest（UI + API 同一仓库）
 
@@ -114,3 +115,5 @@
 - [x] 7.18 codex 安装加固：optional 依赖下载失败是静默的（exit 0 但缺二进制），
   改为装完即验 `codex --version` + 最多 3 次重试 + 缺失则整层明确失败
 - [ ] 7.19 用真实 bug 走一轮：Agent 写用例 → 提交 uitest 分支 → 提 MR → 冒烟 → resolve 备注里贴 MR 链接
+  > 报告**发到哪个仓库**的 MR，已由变更 `fix-smoke-report-target` 单独立规：
+  > 用 `--mr-dir <改动所在子目录>` 推导目标，聚合仓库的指针 MR 会被拒绝。此处只跟端到端流程。

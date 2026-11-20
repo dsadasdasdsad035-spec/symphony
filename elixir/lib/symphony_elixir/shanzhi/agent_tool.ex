@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Shanzhi.AgentTool do
   """
 
   alias SymphonyElixir.Shanzhi.Client
+  alias SymphonyElixir.Smoke.ResolveGate
 
   @get_bug "shanzhi_get_bug"
   @bug_history "shanzhi_bug_history"
@@ -96,21 +97,37 @@ defmodule SymphonyElixir.Shanzhi.AgentTool do
         )
 
       @resolve_bug ->
-        run(
-          opts,
-          fn settings, args ->
-            Client.resolve_bug(
-              arg(args, "bug_id"),
-              to_string(arg(args, "resolution") || "fixed"),
-              to_string(arg(args, "comment") || ""),
-              settings
-            )
-          end,
-          arguments
-        )
+        run_resolve(opts, arguments)
 
       other ->
         unsupported_tool_response(other)
+    end
+  end
+
+  defp run_resolve(opts, arguments) do
+    tracker_settings = Keyword.get_lazy(opts, :tracker_settings, fn -> SymphonyElixir.Config.settings!().tracker end)
+    comment = to_string(arg(arguments, "comment") || "")
+    bug_id = arg(arguments, "bug_id")
+
+    with :ok <- ResolveGate.check(bug_id, comment, opts),
+         {:ok, settings} <- Client.settings(tracker_settings),
+         {:ok, result} <-
+           Client.resolve_bug(
+             bug_id,
+             to_string(arg(arguments, "resolution") || "fixed"),
+             comment,
+             settings
+           ) do
+      dynamic_tool_response(true, encode_payload(result))
+    else
+      {:error, %{"error" => _} = payload} ->
+        dynamic_tool_response(false, encode_payload(payload))
+
+      {:error, reason} ->
+        dynamic_tool_response(false, encode_payload(error_payload(reason)))
+
+      other ->
+        dynamic_tool_response(false, encode_payload(error_payload(other)))
     end
   end
 

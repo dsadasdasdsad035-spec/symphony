@@ -569,6 +569,56 @@ app（只发这些，不发全量）、缺依赖时 `npm ci`，最后交给既�
 界面类缺陷只用接口层验证等于没验：接口 200 只证明后端逻辑通，界面上该渲染的没渲染、
 按钮该亮还是灰的，这些不会出现在接口响应里。
 
+### 分层判定（开工先写 requirement）
+
+**开工后、写用例前**，在缺陷工作区写入 `smoke/smoke-requirement.json`（Agent 写；
+Symphony resolve **硬闸门**会读它，不能只靠备注口头约定）。
+
+```json
+{
+  "schema_version": 1,
+  "required_layers": "UI",
+  "rationale": "复现路径含菜单点击与弹窗渲染",
+  "repro_keywords": ["点击", "弹窗", "样式"],
+  "linked_steps": ["善治步骤 1：打开应用管理", "步骤 3：点保存"]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `required_layers` | `API` / `UI` / `BOTH`（必填） |
+| `rationale` | 一两句判定依据 |
+| `repro_keywords` | 从善治描述摘的关键词，便于评审核对 |
+| `linked_steps` | 可选，善治步骤摘要 |
+
+**分类决策树**（错标等于逃避门禁）：
+
+```
+读善治复现步骤
+  ├─ 无页面/点击/弹窗/渲染描述 ──► required_layers = API
+  ├─ 主要为界面操作/可见状态 ───► required_layers = UI
+  └─ 接口数据 + 列表/页面联动 ──► required_layers = BOTH（API 与 UI 各跑一条 smoke_test.sh）
+```
+
+**反例（禁止）**
+
+- 界面类缺陷只跑 `testcase/api/` 或只用 `smoke_api.sh` 交差——不算冒烟，**不能 resolve**。
+- 用接口 PASS 冒充 UI 层：硬闸门比对 `required_layers` 与 `smoke-pass.json` 的 `layer`/`passes[]`。
+- 无 `smoke_test.sh` 终端 PASS、无 MR `report_url`、无脚本写的 `smoke/smoke-pass.json` → **Symphony 拒绝 `shanzhi_resolve_bug`**（`SMOKE_RESOLVE_GATE=1`，默认开启）。
+
+**交付顺序**（不可跳步）：
+
+```mermaid
+flowchart LR
+  A[requirement.json] --> B[uitest 用例 MR]
+  B --> C[发版 :30669]
+  C --> D["smoke_test.sh --publish-report"]
+  D --> E[smoke-pass.json]
+  E --> F["resolve + 八段式 HTML"]
+```
+
+通行证**只能**由 `smoke_test.sh` 写入 `smoke/smoke-pass.json`；未 `--publish-report` 成功或发布被拒（退出码 4）不会写 PASS。
+
 ### 用例仓库 `iidp_uitest`
 
 `http://192.168.175.55:9888/xuchunxia/iidp_uitest.git`（约 1.1G，脚本自动浅克隆到
@@ -658,14 +708,21 @@ def test_meta_app_search_after_fix():
 
 ```bash
 # 接口层
-smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py --expect-version <版本> --publish-report
+smoke_test.sh --issue SF-xxxxx --case testcase/api/iidp/test_xxx_smoke.py \
+  --expect-version <版本> --publish-report \
+  --scope "验 RPC 返回行数" --out-of-scope "不测导出按钮" \
+  --mr-dir <子目录> --mr <序号>
 
 # 界面层
-smoke_test.sh --case testcase/iidp/iidp/test_xxx_smoke.py::Test_X::test_y --expect-version <版本> --publish-report
+smoke_test.sh --issue SF-xxxxx --case testcase/iidp/iidp/test_xxx_smoke.py::Test_X::test_y \
+  --expect-version <版本> --publish-report \
+  --steps-map smoke/step-map.md \
+  --mr-dir <子目录> --mr <序号>
 ```
 
-`--publish-report` 把报告作为评论发到代码仓库的 MR（需同时给 `--gl-project` 与 `--mr`），
-并额外生成本地 `report.md` 与 `evidence.html`（后者整段贴进善治备注）。
+`--publish-report` 把报告作为评论发到代码仓库的 MR（配 `--mr-dir` + `--mr`，
+详见「报告放到 MR 评论里」），并额外生成本地 `report.md` 与 `evidence.html`
+（后者整段贴进善治备注）。
 工作区在 resolve 后会被销毁，**不发布报告等于人工验收时看不到任何证据**。
 
 脚本名在 `PATH` 里（`/opt/symphony-release/smoke_test.sh`，也可用 `$SMOKE_TEST_SH`）。
@@ -730,16 +787,36 @@ smoke_api.sh --model meta_app --service search --app sie-iidp-app-store \
 善治备注里放结论摘要 + 链接。要求与 MR 链接同等对待：**没有报告链接的 resolve
 视为没有冒烟**。
 
-字段固定，缺一项就视为没有有效证据：
+**八段式**（resolve 的 `comment` 必填；Symphony 硬闸门会查「测试边界」「步骤对应」及报告链接）：
 
+| 段落 | 内容 |
+|---|---|
+| 用例来源 | iidp_uitest 分支/MR + `uitest_ref`（evidence.html 已带） |
+| 冒烟类型 | 接口 / 界面 / 两层 |
+| 目标地址 | `http://192.168.181.104:30669/...` |
+| 过程 | 发版版本 + `smoke_test.sh` 命令摘要 |
+| 场景描述 | 一句话行为 |
+| 测试边界 | 验什么 / **不验什么**（与 `--scope` / `--out-of-scope` 一致） |
+| 步骤对应 | 善治步骤 ↔ pytest 步骤（或 `--steps-map`） |
+| 结果与链接 | PASS/FAIL + **MR 评论链接**（须与 `smoke-pass.json` 的 `report_url` 一致） |
+
+HTML 片段模板（可贴在 remark/resolve 前自测）：
+
+```html
+<p><b>用例来源</b>：iidp_uitest 分支 smoke/SF-xxxxx @ abc1234</p>
+<p><b>冒烟类型</b>：界面</p>
+<p><b>目标地址</b>：http://192.168.181.104:30669/iidp/</p>
+<p><b>过程</b>：publish_dev → smoke_test.sh --issue SF-xxxxx …</p>
+<p><b>场景</b>：保存后列表刷新</p>
+<h4>测试边界</h4>
+<ul><li>验证：保存成功提示与行刷新</li><li>不验证：导出、权限切换</li></ul>
+<h4>步骤对应</h4>
+<ol><li>善治步骤 2 → test_save_after_fix 内 click_menu + assert 行数</li></ol>
+<p><b>结果</b>：通过</p>
+<p><a href="http://.../merge_requests/N#note_ID" data-smoke-report="http://.../merge_requests/N#note_ID">冒烟报告</a></p>
 ```
-冒烟类型: 接口 / 界面
-目标地址: http://192.168.181.104:30669/...
-场景描述: <一句话：验的是什么行为>
-结果: 通过 / 失败
-证据引用: <命令 + 关键响应片段> 或 <截图路径 + Console/网络日志路径 + 报告路径>
-报告链接: <MR 评论链接，点开有结论/版本/用例明细/截图>
-```
+
+无终端 PASS、无 MR 报告链接 → **禁止 resolve**（闸门与 WORKFLOW 一致）。
 
 ### 报告放到 MR 评论里
 
@@ -749,19 +826,31 @@ smoke_api.sh --model meta_app --service search --app sie-iidp-app-store \
 ```bash
 smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py \
   --expect-version <版本> --publish-report \
-  --gl-project <代码仓库项目路径> --mr <MR 序号>
+  --mr-dir <改动所在的子目录> --mr <MR 序号>
 ```
 
-- `--gl-project` 用**本次修复代码所在的子仓库**路径，如 `ipaas/sie-snest`、
-  `ipaas/sie-snest-sdk`、`mijiuye/iidp-aios`。**绝不能填 uitest**（`xuchunxia/iidp_uitest`）：
-  那是用例仓库，把报告发过去，改代码的 MR 里就看不到任何验证证据，脚本会直接拒绝。
+- 目标用 `--mr-dir` 指**本次改动所在的子目录**（如 `sie-snest`、`sie-iidp-ai-agent-web`），
+  脚本读该目录自己的 `origin` 得到项目路径。不要顺手手填。
+
+  ```
+  本次改了哪些子仓库？
+    ├─ 有子仓库改动 ->  --mr-dir <那个子目录>   ← 绝大多数情况走这里
+    └─ 只改根仓库文件（openspec/ docs/ AGENTS.md）-> --mr-dir .  或 --gl-project mijiuye/iidp-aios
+  ```
+
+  **聚合仓库的指针 MR 默认不是目标**。它的 diff 只有一行 `Subproject commit`，
+  报告发过去，评审在真正的代码 diff 里就看不到验证证据。脚本会在发布前核对目标 MR
+  的改动内容，发现全是指针推进就拒绝发送、以退出码 4 结束，并打印该用哪个子目录。
+- `--gl-project <项目路径>` 仍可用（如 `ipaas/sie-snest`、URL 编码形式），
+  与 `--mr-dir` 同时给出时以 `--mr-dir` 为准并告警。**绝不能填 uitest**
+  （`xuchunxia/iidp_uitest`）：那是用例仓库，脚本会直接拒绝。
 - 一个 bug 改了多个仓库时，发给**承载该缺陷的那个仓库**的 MR（bug 描述里点名的
   应用/服务在哪边，就发哪边）；其余仓库的 MR 里用一行链接指回这条评论。
 - 报告正文作为评论发出：结论、版本校验、每条用例的耗时与结果、失败原文、截图。
   截图先经 GitLab uploads 接口上传成 `/uploads/...`，评论里是 GitLab 自己的图片，
   登录团队可见，不会出现破图。
 - 末尾打印 `MR评论:` 链接，就是 `报告链接` 要贴的地址。
-- 若 MR 还没建（先跑冒烟后提 MR）：不带 `--gl-project/--mr`，脚本只产出本地的
+- 若 MR 还没建（先跑冒烟后提 MR）：不带 `--mr-dir/--gl-project/--mr`，脚本只产出本地的
   `report.md` 与 `evidence.html`，等 MR 建好后再跑一次带参数的。
 
 ### 善治备注怎么贴
@@ -779,7 +868,9 @@ MR 评论链接、MR 链接。把它整段作为 `comment` 传给 `shanzhi_remar
 
 ### 豁免：确实覆盖不了
 
-无法冒烟时，必须在 resolve 的 comment 里写豁免段落，**原因只能从这四个里选**：
+**豁免不能绕过硬闸门**：界面操作为主的缺陷不得用「接口已测」豁免；豁免只走 `shanzhi_remark_bug` 说明原因，**不能**在仍要求 UI 层时强行 resolve。
+
+无法冒烟时，必须在 remark 里写豁免段落，**原因只能从这四个里选**（不要 resolve，除非已人工改 requirement 为合法豁免流程并由负责人确认）：
 
 1. 界面在宿主内无法直达（微前端只经特定入口挂载，没有独立地址可驱动）
 2. 需要特定环境数据（特定租户 / 账号 / 数据状态，环境不具备）

@@ -24,12 +24,14 @@
 #
 # 用法：
 #   smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py            # 接口层
-#   smoke_test.sh --case ... --publish-report --gl-project a/b --mr 12  # 报告发到 MR 评论
+#   smoke_test.sh --case ... --publish-report --mr-dir sie-snest --mr 12
+#                                                                     # 报告发到改动子仓库的 MR 评论
 #   smoke_test.sh --case testcase/iidp/iidp/test_xxx_smoke.py           # 界面层
 #   smoke_test.sh --case ...::Test_X::test_y --expect-version 1.0.1
 #
 # 退出码：
 #   0 PASS｜1 验收失败｜2 参数/依赖缺失｜3 版本等待超时
+#   4 报告目的地被拒（结论已产出，但没落到应发的 MR，需按提示改目标重发）
 
 set -uo pipefail
 
@@ -84,9 +86,14 @@ ATTEMPTS=1
 # 1 时把 report.md + 截图提交进 uitest 当前分支：善治备注只能写 HTML 文本，
 # 不能传附件，所以报告必须落到一个能贴链接的地方（与 MR 同源最省事）。
 # 1 时生成发布产物：本地 report.md（人看）+ evidence.html（贴善治备注用），
-# 给了 --gl-project/--mr 就直接发到代码仓库的 MR 评论上。
+# 给了 --mr-dir（或 --gl-project）与 --mr 就直接发到代码仓库的 MR 评论上。
 PUBLISH=0
+# 报告目的地被拒时置 1：结论已经产出，但这次冒烟不能算作已交付证据，所以非 0 退出。
+PUBLISH_REFUSED=0
 GL_PROJECT=""
+# 改动所在的子目录。工作区根目录是聚合仓库，子仓库各自独立成库；
+# 让调用方指目录、由脚本读该目录自己的 remote，比手填项目路径少一次猜错的机会。
+MR_DIR=""
 MR_IID=""
 # GitLab 站点地址：优先 $GITLAB_URL，其次从 APP_REPO_URL 推导（代码仓库就在那台），
 # 最后退回 uitest 仓库的 host——内网这几样通常同一台。
@@ -105,6 +112,11 @@ VERSION_APP=""
 VERSION_TIMEOUT=300
 POLL_INTERVAL=15
 FALLBACK_WAIT=60
+# 善治缺陷号（SF-83221），用于把通行证写到对应工作区；resolve 硬闸门会读该文件。
+ISSUE="${SYMPHONY_ISSUE_IDENTIFIER:-}"
+SMOKE_SCOPE=""
+SMOKE_OUT_OF_SCOPE=""
+STEPS_MAP=""
 
 usage() {
   cat <<'EOF'
@@ -125,10 +137,17 @@ usage() {
   --host <URL>             前端地址，默认 http://192.168.181.104:30669/iidp/
   --python <解释器>        默认优先用仓库内 .venv/bin/python，否则 python3
   --output <DIR>           证据目录，默认 ./smoke-test-<时间戳>
-  --publish-report         生成可发布的报告：贴到 MR 评论需要同时给 --gl-project 与 --mr；
-                           不给就只产出本地 report.md 与 evidence.html（供善治备注用）
-  --gl-project <PATH>      代码仓库的 GitLab 项目路径（如 mijiuye/iidp-aios 或 URL 编码形式）
+  --publish-report         生成可发布的报告：贴到 MR 评论需要给 --mr-dir 或 --gl-project，
+                           并与 --mr 配对；不给就只产出本地 report.md 与 evidence.html
+  --mr-dir <子目录>        改动所在的子目录（如 sie-snest、sie-iidp-ai-agent-web），
+                           从该目录的 git origin 推导项目路径。与 --gl-project 二选一，
+                           同时给出时以本参数为准。推荐用它：不会顺着聚合仓库的手感填错
+  --gl-project <PATH>      代码仓库的 GitLab 项目路径（如 ipaas/sie-snest 或 URL 编码形式）
   --mr <IID>               代码仓库 MR 序号；给了就把报告作为评论发到该 MR
+  --issue <SF-xxxxx>       善治缺陷标识，写入 smoke/smoke-pass.json（也可用环境变量 SYMPHONY_ISSUE_IDENTIFIER）
+  --scope <文本>           测试边界：本次验证覆盖什么（写入报告与 evidence.html）
+  --out-of-scope <文本>    测试边界：明确不验证什么
+  --steps-map <文件>       善治复现步骤与用例步骤的对应说明（markdown 文本文件）
   --screencast             开启过程动图（仅界面层有效；默认关闭，无头下帧洪峰会拖慢/拖崩浏览器）
   --attempts <N>           失败重试次数，默认 1（不做重试）
 
@@ -172,6 +191,16 @@ while [ $# -gt 0 ]; do
     --publish-report)   PUBLISH=1; shift ;;
     --gl-project)       GL_PROJECT="${2:-}"; shift 2 ;;
     --gl-project=*)     GL_PROJECT="${1#*=}"; shift ;;
+    --mr-dir)           MR_DIR="${2:-}"; shift 2 ;;
+    --mr-dir=*)         MR_DIR="${1#*=}"; shift ;;
+    --issue)            ISSUE="${2:-}"; shift 2 ;;
+    --issue=*)          ISSUE="${1#*=}"; shift ;;
+    --scope)            SMOKE_SCOPE="${2:-}"; shift 2 ;;
+    --scope=*)          SMOKE_SCOPE="${1#*=}"; shift ;;
+    --out-of-scope)     SMOKE_OUT_OF_SCOPE="${2:-}"; shift 2 ;;
+    --out-of-scope=*)   SMOKE_OUT_OF_SCOPE="${1#*=}"; shift ;;
+    --steps-map)        STEPS_MAP="${2:-}"; shift 2 ;;
+    --steps-map=*)      STEPS_MAP="${1#*=}"; shift ;;
     --mr)               MR_IID="${2:-}"; shift 2 ;;
     --mr=*)             MR_IID="${1#*=}"; shift ;;
     --screencast)       SCREENCAST=1; shift ;;
@@ -213,6 +242,32 @@ if [ -z "$GL_BASE" ]; then
     GL_BASE="$(printf '%s' "$REPO_URL" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*)://([^/]+).*#\1://\2#')"
   fi
 fi
+# 从子目录的 origin 推导 GitLab 项目路径（sie-snest -> ipaas/sie-snest）。
+# 兼容 http(s)://host/group/proj.git 与 git@host:group/proj.git 两种写法。
+project_from_dir() {
+  local dir="$1" url
+  [ -d "$dir" ] || return 1
+  url="$(git -C "$dir" -c http.proxy= -c https.proxy= remote get-url origin 2>/dev/null)" || return 1
+  [ -n "$url" ] || return 1
+  printf '%s' "$url" \
+    | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]+/##; s#^[^@/]+@[^:]+:##; s#\.git$##; s#/+$##'
+}
+
+# --mr-dir 优先：调用方指了改动所在的子目录，就用该目录自己的 remote，
+# 不再信任手填的 --gl-project（手填时最容易顺着 cwd 填成聚合仓库）。
+if [ -n "$MR_DIR" ]; then
+  DERIVED_PROJECT="$(project_from_dir "$MR_DIR" || true)"
+  if [ -z "$DERIVED_PROJECT" ]; then
+    die 2 "--mr-dir 推导不出项目路径：${MR_DIR}
+  该目录必须存在、且本身是独立 git 仓库（有 origin 远端）。
+  若是聚合仓库里尚未初始化的子模块，先执行 git submodule update --init ${MR_DIR}。"
+  fi
+  if [ -n "$GL_PROJECT" ]; then
+    warn "--mr-dir 与 --gl-project 同时给出，以 --mr-dir 推导结果为准：忽略 ${GL_PROJECT}，采用 ${DERIVED_PROJECT}"
+  fi
+  GL_PROJECT="$DERIVED_PROJECT"
+fi
+
 # 项目路径去掉可能带的 .git 与首尾斜杠，后面按 path 编码。
 GL_PROJECT="${GL_PROJECT%.git}"
 GL_PROJECT="${GL_PROJECT#/}"
@@ -223,8 +278,8 @@ GL_PROJECT="${GL_PROJECT%/}"
 # 报告必须贴着**代码**走——发到用例仓库，评审看 diff 时根本看不到它。
 UITEST_PROJECT="$(printf '%s' "$REPO_URL" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]+/##; s#\.git$##; s#/+$##')"
 if [ -n "$GL_PROJECT" ] && [ "$GL_PROJECT" = "$UITEST_PROJECT" ]; then
-  die 2 "--gl-project 指向了用例仓库 ${UITEST_PROJECT}。
-  报告要发到**本次修复代码所在的子仓库**（如 mijiuye/iidp-aios、ipaas/sie-snest），
+  die 2 "报告目标指向了用例仓库 ${UITEST_PROJECT}。
+  报告要发到**本次修复代码所在的子仓库**（如 ipaas/sie-snest、mijiuye/iidp-aios），
   否则评审看该仓库的 MR 时找不到冒烟证据。"
 fi
 
@@ -531,14 +586,14 @@ preflight_publish() {
   [ "$PUBLISH" = "1" ] || return 0
   if [ -n "$MR_IID" ] || [ -n "$GL_PROJECT" ]; then
     [ -n "$MR_IID" ] && [ -n "$GL_PROJECT" ] \
-      || die 2 "--gl-project 与 --mr 必须成对给出（只给一个无法定位评论目标）"
+      || die 2 "--mr-dir/--gl-project 与 --mr 必须成对给出（只给一个无法定位评论目标）"
     case "$MR_IID" in
       ''|*[!0-9]*) die 2 "--mr 需要 MR 序号（纯数字），收到: $MR_IID" ;;
     esac
     [ -n "${GITLAB_TOKEN:-${GIT_TOKEN:-}}" ] \
       || die 2 "发 MR 评论需要 \$GITLAB_TOKEN（或 \$GIT_TOKEN）"
   else
-    log "未给 --gl-project/--mr：只生成本地报告与 evidence.html，不发送到 MR"
+    log "未给 --mr-dir/--gl-project 与 --mr：只生成本地报告与 evidence.html，不发送到 MR"
   fi
 }
 
@@ -674,6 +729,8 @@ write_report() {
   SMOKE_VERSION="$VERSION_NOTE" SMOKE_JUNIT="$JUNIT" SMOKE_RUNLOG="$RUN_LOG" \
   SMOKE_IMG_DIR="$img_dir" SMOKE_STACK="$STACK" SMOKE_PRODUCT="$PRODUCT" \
   SMOKE_TESTS="$TESTS" SMOKE_DURATION="$DURATION" \
+  SMOKE_SCOPE_TEXT="$SMOKE_SCOPE" SMOKE_OOS_TEXT="$SMOKE_OUT_OF_SCOPE" \
+  SMOKE_STEPS_MAP="$STEPS_MAP" \
   "$PYTHON" - "$REPORT_MD" <<'PY' || warn "生成 report.md 失败（不影响冒烟结论）"
 import html
 import os
@@ -735,6 +792,28 @@ if rows:
         add("| `%s` | %ss | %s | %s |" % (name, t, status, detail.replace("|", "\\|")))
     add("")
 
+scope = os.environ.get("SMOKE_SCOPE_TEXT", "").strip()
+oos = os.environ.get("SMOKE_OOS_TEXT", "").strip()
+steps_map = os.environ.get("SMOKE_STEPS_MAP", "").strip()
+if scope or oos or steps_map:
+    add("## 测试边界与步骤")
+    add("")
+if scope:
+    add("- **测试边界**（验证）：%s" % scope)
+if oos:
+    add("- **测试边界**（不验证）：%s" % oos)
+if steps_map:
+    add("- **步骤对应**：")
+    if os.path.isfile(steps_map):
+        with open(steps_map, encoding="utf-8") as fh:
+            add("")
+            add(fh.read().strip())
+    else:
+        add("  %s" % steps_map)
+    add("")
+elif scope or oos:
+    add("")
+
 # 截图：相对路径，发布时 img/ 一起提交，GitLab 里直接渲染。
 if img_dir and os.path.isdir(img_dir):
     shots = sorted(f for f in os.listdir(img_dir) if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif")))
@@ -786,6 +865,54 @@ gl_project_enc() {
 
 gl_api() { printf '%s/api/v4%s' "$GL_BASE" "$1"; }
 
+# 判断目标 MR 的改动是「只推进子模块指针」还是含真实代码改动。
+# 依据：聚合仓库的指针 MR 里每条 diff 都只有 -/+ Subproject commit 两行，
+# 这类 MR 收冒烟报告没有意义——评审要看的是子仓库那份 diff。
+# 输出（第一列）：pointer <子模块路径> / code <改动文件> / unknown。
+# unknown 表示读不到或解析不了：调用方降级放行，不能因为校验不可用就卡住交付。
+mr_diff_kind() {
+  local resp enc
+  enc="$(gl_project_enc "$GL_PROJECT")"
+  resp="$(curl -sS --max-time 30 --noproxy '*' \
+      -H "PRIVATE-TOKEN: ${GL_TOKEN}" \
+      "$(gl_api "/projects/${enc}/merge_requests/${MR_IID}/changes")" 2>/dev/null || true)"
+  [ -n "$resp" ] || { printf 'unknown\t'; return; }
+  printf '%s' "$resp" | "$PYTHON" -c '
+import json, re, sys
+
+try:
+    data = json.loads(sys.stdin.read())
+except ValueError:
+    print("unknown\t"); raise SystemExit
+
+changes = data.get("changes")
+if not isinstance(changes, list) or not changes:
+    print("unknown\t"); raise SystemExit
+
+pointer = re.compile(r"^[+-]Subproject commit [0-9a-fA-F]+\s*$")
+real, subs = [], []
+for ch in changes:
+    path = ch.get("new_path") or ch.get("old_path") or "?"
+    dirty = False
+    for line in (ch.get("diff") or "").splitlines():
+        # 空行、hunk 头、以及 diff 尾部的换行提示都不算改动内容。
+        if not line.strip() or line.startswith("@@") or line.startswith("\\ No newline"):
+            continue
+        if pointer.match(line):
+            continue
+        dirty = True
+        break
+    (real if dirty else subs).append(path)
+
+if real:
+    print("code\t" + ",".join(real))
+elif subs:
+    print("pointer\t" + ",".join(subs))
+else:
+    print("unknown\t")
+'
+}
+
 # 把截图上传到项目，换成 GitLab 的 markdown 图片引用。
 # 不能直接用本地路径或 raw 链接：raw 需要登录态，评论里会显示成破图。
 publish_images() {
@@ -824,6 +951,32 @@ publish_report() {
 
   local body_file="$OUTPUT/mr-comment.md"
   GL_PROJECT_ENC="$(gl_project_enc "$GL_PROJECT")"
+
+  # 目的地核对：报告的落点必须是承载真实代码改动的 MR。
+  # 放在这一段而不是更早，是因为此时用例已经跑完、report.md 已经落盘——
+  # 就算目的地判错，本次冒烟的证据也不能跟着丢。
+  local verdict kind paths
+  verdict="$(mr_diff_kind)"
+  kind="${verdict%%$'\t'*}"
+  paths="${verdict#*$'\t'}"
+  case "$kind" in
+    pointer)
+      PUBLISH_REFUSED=1
+      warn "拒绝发布：MR !${MR_IID}（${GL_PROJECT}）只推进了子模块指针，没有代码改动。"
+      warn "该指针指向：${paths}"
+      warn "报告应发到承载改动的那份 MR，用子目录推导目标即可："
+      warn "  --mr-dir ${paths%%,*} --mr <该子仓库的 MR 序号>"
+      warn "本地报告仍已产出：${REPORT_MD}"
+      return 0
+      ;;
+    code)
+      log "目的地核对通过：MR !${MR_IID} 含真实代码改动（${paths}）"
+      ;;
+    *)
+      warn "读不到 MR !${MR_IID} 的改动内容（权限/接口/网络），跳过目的地核对，仍按给定目标发布"
+      ;;
+  esac
+
   local img_md="$OUTPUT/.img-markdown"
   publish_images "$OUTPUT/img" "$img_md"
 
@@ -880,7 +1033,21 @@ write_evidence_html() {
   SMOKE_CASE="$CASE" SMOKE_VERSION="$VERSION_NOTE" SMOKE_TESTS="$TESTS" \
   SMOKE_DURATION="$DURATION" SMOKE_EVIDENCE="$EVIDENCE_TEXT" \
   SMOKE_URL="${REPORT_URL:-}" SMOKE_MR_URL="${MR_WEB_URL:-}" \
-  SMOKE_IMAGES="$SHOT_COUNT" \
+  local uitest_ref=""
+  if [ -n "${REPO:-}" ] && [ -d "$REPO/.git" ]; then
+    uitest_ref="$("$PYTHON" -c '
+import subprocess, os, json
+repo = os.environ.get("R", "")
+try:
+    b = subprocess.check_output(["git","-C",repo,"rev-parse","--abbrev-ref","HEAD"], text=True).strip()
+    s = subprocess.check_output(["git","-C",repo,"rev-parse","--short","HEAD"], text=True).strip()
+    print(json.dumps({"branch": b, "sha": s}, ensure_ascii=False))
+except Exception:
+    print("{}")
+' R="$REPO" 2>/dev/null || echo '{}')"
+  fi
+  SMOKE_IMAGES="$SHOT_COUNT" SMOKE_SCOPE="$SMOKE_SCOPE" SMOKE_OOS="$SMOKE_OUT_OF_SCOPE" \
+  SMOKE_UITEST_REF="$uitest_ref" \
   "$PYTHON" - "$EVIDENCE_HTML" <<'PY' 2>/dev/null || warn "生成 evidence.html 失败"
 import html
 import os
@@ -895,10 +1062,27 @@ parts.append("<p><b>冒烟结果：<span style=\"color:%s\">%s</span></b>（%s �
 parts.append("<ul>")
 parts.append("<li>目标环境：%s</li>" % html.escape(env.get("SMOKE_HOST", "")))
 parts.append("<li>用例：<code>%s</code></li>" % html.escape(env.get("SMOKE_CASE", "")))
+uitest_raw = env.get("SMOKE_UITEST_REF", "").strip()
+if uitest_raw and uitest_raw != "{}":
+    try:
+        import json
+        ref = json.loads(uitest_raw)
+        if ref.get("branch"):
+            parts.append("<li>iidp_uitest：<code>%s</code> @ <code>%s</code></li>"
+                         % (html.escape(ref.get("branch", "")), html.escape(ref.get("sha", ""))))
+    except Exception:
+        pass
 parts.append("<li>版本校验：%s</li>" % html.escape(env.get("SMOKE_VERSION", "")))
 parts.append("<li>用例数/耗时：%s 条 / %ss</li>" % (html.escape(env.get("SMOKE_TESTS", "")),
                                                 html.escape(env.get("SMOKE_DURATION", ""))))
 parts.append("<li>证据：%s</li>" % html.escape(env.get("SMOKE_EVIDENCE", "")))
+scope = env.get("SMOKE_SCOPE", "")
+oos = env.get("SMOKE_OOS", "")
+if scope:
+    parts.append("<li><b>测试边界</b>（验证）：%s</li>" % html.escape(scope))
+if oos:
+    parts.append("<li><b>测试边界</b>（不验证）：%s</li>" % html.escape(oos))
+parts.append("<li><b>步骤对应</b>：见报告正文「测试边界与步骤」或 --steps-map 文件</li>")
 url = env.get("SMOKE_URL", "")
 mr = env.get("SMOKE_MR_URL", "")
 if url:
@@ -916,6 +1100,115 @@ with open(os.sys.argv[1], "w", encoding="utf-8") as fh:
 PY
 }
 
+smoke_workspace_root() {
+  local id="${ISSUE:-}"
+  if [ -z "$id" ]; then
+    id="$(basename "$(pwd)")"
+    case "$id" in SF-*|M*) : ;; *) id="" ;; esac
+  fi
+  local root="${SYMPHONY_WORKSPACE_ROOT:-}"
+  if [ -n "$id" ] && [ -n "$root" ] && [ -d "$root/$id" ]; then
+    printf '%s' "$root/$id"
+  elif [ -d "$(pwd)/.git" ]; then
+    pwd
+  elif [ -n "$root" ] && [ -n "$id" ]; then
+    printf '%s' "$root/$id"
+  else
+    pwd
+  fi
+}
+
+write_smoke_fail_credential() {
+  local ws dir
+  ws="$(smoke_workspace_root)"
+  dir="$ws/smoke"
+  mkdir -p "$dir" || return 0
+  id="${ISSUE:-$(basename "$ws")}"
+  "$PYTHON" - "$dir/smoke-fail.json" <<PY || return 0
+import json, os, datetime
+out = {
+    "schema_version": 1,
+    "issue_identifier": """${id}""",
+    "verdict": "FAIL",
+    "layer": """${LAYER}""",
+    "case": """${CASE}""",
+    "finished_at": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).isoformat(),
+    "report_md": """${REPORT_MD:-}""",
+}
+with open(os.sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(out, fh, ensure_ascii=False, indent=2)
+PY
+}
+
+write_smoke_pass_credential() {
+  [ "$REPORT_VERDICT" = "PASS" ] || return 0
+  [ "$PUBLISH" = "1" ] || { warn "未带 --publish-report，不写 PASS 通行证（resolve 硬闸门会拒绝）"; return 0; }
+  [ -n "$REPORT_URL" ] || { warn "无 MR 报告链接，不写 PASS 通行证"; return 0; }
+  [ "$PUBLISH_REFUSED" = "1" ] && return 0
+  local ws dir id uitest_dir
+  ws="$(smoke_workspace_root)"
+  dir="$ws/smoke"
+  mkdir -p "$dir" || return 0
+  id="${ISSUE:-$(basename "$ws")}"
+  uitest_dir="${REPO:-}"
+  UITEST_DIR="$uitest_dir" ISSUE_ID="$id" LAYER_NAME="$LAYER" CASE_NAME="$CASE" \
+  HOST_NAME="$HOST" VERSION_NOTE_TEXT="$VERSION_NOTE" REPORT_URL_TEXT="$REPORT_URL" \
+  REPORT_MD_PATH="$REPORT_MD" SMOKE_SCOPE_TEXT="$SMOKE_SCOPE" SMOKE_OOS_TEXT="$SMOKE_OUT_OF_SCOPE" \
+  "$PYTHON" - "$dir/smoke-pass.json" <<'PY' || warn "写入 smoke-pass.json 失败"
+import json, os, subprocess, datetime
+
+def uitest_ref(repo):
+    if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+        return {}
+    try:
+        branch = subprocess.check_output(
+            ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"], text=True
+        ).strip()
+        sha = subprocess.check_output(
+            ["git", "-C", repo, "rev-parse", "--short", "HEAD"], text=True
+        ).strip()
+        return {"branch": branch, "sha": sha}
+    except Exception:
+        return {}
+
+path = os.sys.argv[1]
+env = os.environ
+entry = {
+    "verdict": "PASS",
+    "layer": env.get("LAYER_NAME", ""),
+    "case": env.get("CASE_NAME", ""),
+    "host": env.get("HOST_NAME", ""),
+    "version_note": env.get("VERSION_NOTE_TEXT", ""),
+    "report_url": env.get("REPORT_URL_TEXT", ""),
+    "report_md": env.get("REPORT_MD_PATH", ""),
+    "scope": env.get("SMOKE_SCOPE_TEXT", ""),
+    "out_of_scope": env.get("SMOKE_OOS_TEXT", ""),
+    "issue_identifier": env.get("ISSUE_ID", ""),
+    "finished_at": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).isoformat(),
+    "runner": "smoke_test.sh",
+    "uitest_ref": uitest_ref(env.get("UITEST_DIR", "")),
+}
+doc = {"schema_version": 1, "issue_identifier": env.get("ISSUE_ID", ""), "passes": []}
+if os.path.isfile(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        doc = {"schema_version": 1, "issue_identifier": env.get("ISSUE_ID", ""), "passes": []}
+passes = [p for p in doc.get("passes", []) if p.get("layer") != entry["layer"]]
+passes.append(entry)
+doc["passes"] = passes
+doc["issue_identifier"] = env.get("ISSUE_ID", doc.get("issue_identifier", ""))
+# 最新一层作为主字段，供简易读取
+doc.update({k: entry[k] for k in ("verdict", "layer", "case", "report_url", "report_md") if entry.get(k)})
+doc["report_url"] = entry["report_url"]
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, ensure_ascii=False, indent=2)
+print(path)
+PY
+  log "冒烟通行证已写入：$dir/smoke-pass.json"
+}
+
 # 收尾：先出报告（人看），再按需发布（MR 评论 / 善治备注），最后打印五字段。
 finish() {
   local verdict="$1" evidence="$2"
@@ -927,6 +1220,15 @@ finish() {
     write_evidence_html
   fi
   print_result "$verdict" "$evidence"
+  if [ "$verdict" = "PASS" ]; then
+    write_smoke_pass_credential
+  else
+    write_smoke_fail_credential
+  fi
+  # 目的地被拒：报告没落到该落的地方，本轮不能当作已交付证据。
+  # 用独立退出码，好和"用例失败(1)""版本超时(3)"区分开。
+  [ "$PUBLISH_REFUSED" = "1" ] && exit 4
+  return 0
 }
 
 if [ "$OK" = "1" ]; then

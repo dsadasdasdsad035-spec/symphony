@@ -32,7 +32,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: symphony
-          image: harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v9
+          image: harbor.devcenter.gushen.sieiot.com/iidp/symphony-agent:v10
           imagePullPolicy: IfNotPresent
           securityContext:
             # 直接以 1000 运行：Claude Code 的 --dangerously-skip-permissions 拒绝 root，
@@ -61,6 +61,9 @@ spec:
               value: /config/WORKFLOW.md
             - name: TZ
               value: Asia/Shanghai
+            # resolve 前校验工作区 smoke-pass.json（灰度回退设 0）
+            - name: SMOKE_RESOLVE_GATE
+              value: "1"
             # Agent 建 MR / 拉评审意见走 GitLab REST API，认 GITLAB_TOKEN；
             # secret 里存的是 GIT_TOKEN（git 推送用），这里映射一份。
             - name: GITLAB_TOKEN

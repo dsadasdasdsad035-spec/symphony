@@ -9,7 +9,24 @@ description:
 
 # IIDP 冒烟用例（iidp_uitest）
 
-本 skill 只讲**怎么写用例**。跑用例用 `smoke_test.sh`，证据模板与豁免规则见 `WORKFLOW.md`。
+本 skill 只讲**怎么写用例**。跑用例用 `smoke_test.sh`，证据模板与硬闸门见 `WORKFLOW.md`。
+
+## 零、先于用例：写 `smoke/smoke-requirement.json`
+
+在缺陷工作区（`$SYMPHONY_WORKSPACE_ROOT/SF-xxxxx/`）创建：
+
+```json
+{
+  "schema_version": 1,
+  "required_layers": "UI",
+  "rationale": "依据善治复现步骤判定",
+  "repro_keywords": ["点击", "弹窗"]
+}
+```
+
+- `API` / `UI` / `BOTH` 与善治描述一致；**界面为主不能标 API**。
+- BOTH 需要各跑一层 `smoke_test.sh`，通行证合并进同一 `smoke-pass.json` 的 `passes[]`。
+- 再写 uitest 用例、提 MR；发版后 `--issue SF-xxxxx --publish-report` 写通行证。
 
 用例仓库在 `/data/workspaces/.uitest`（即 `$SYMPHONY_WORKSPACE_ROOT/.uitest`），
 由 `smoke_test.sh` 首次运行时浅克隆。下文所有路径都相对这个仓库根。
@@ -234,17 +251,23 @@ MR 评论**上。用例在 uitest，验证结果贴着代码，评审在同一�
 
 ```bash
 smoke_test.sh --case testcase/api/iidp/test_xxx_smoke.py \
-  --publish-report --gl-project <代码仓库项目路径> --mr <MR 序号>
+  --publish-report --mr-dir <改动所在的子目录> --mr <MR 序号>
 ```
 
-- `--gl-project` 是**本次修复代码所在的子仓库**（如 `ipaas/sie-snest`、
-  `mijiuye/iidp-aios`），**不能是 uitest**——发到用例仓库，改代码的 MR 里就没有
-  验证证据，脚本会直接拒绝。
+- `--mr-dir` 指**本次改动所在的子目录**（如 `sie-snest`、`sie-iidp-ai-agent-web`），
+  脚本读该目录的 `origin` 得到项目路径——不要手填项目路径，手填时最容易顺着
+  cwd 填成聚合仓库 `mijiuye/iidp-aios`。
+- **聚合仓库的指针 MR 不是目标**：它的 diff 只有一行 `Subproject commit`。
+  只有缺陷本身只改根仓库（`openspec/`、`docs/`、`AGENTS.md`）时才发到聚合仓库，
+  那时用 `--mr-dir .`。脚本发布前会核对目标 MR 的改动，全是指针推进就拒绝发送、
+  退出码 4，并告诉你该用哪个子目录。
+- `--gl-project <项目路径>` 仍可用，与 `--mr-dir` 同时给出时以 `--mr-dir` 为准。
+  **不能是 uitest**——发到用例仓库，改代码的 MR 里就没有验证证据，脚本会直接拒绝。
 - 改了多个仓库时发给承载该缺陷的那个，其余 MR 里贴一行链接指回该评论。
 - 脚本会把报告作为评论发出，截图先上传成 GitLab 的 `/uploads/...` 图，评论里直接显示。
 - 同时生成 `evidence.html`：一段带结论、版本、耗时、评论链接和 MR 链接的 HTML，
   整段作为 `shanzhi_remark_bug` 的 comment 即可。
-- MR 还没建时不带 `--gl-project/--mr`，只产出本地 `report.md` 与 `evidence.html`；
+- MR 还没建时不带 `--mr-dir/--gl-project/--mr`，只产出本地 `report.md` 与 `evidence.html`；
   工作区 resolve 后会被销毁，**交付前必须把报告发出去**。
 
 缓存目录被别人 `git pull` 更新过，**你的用例写在分支上，别提交到 master**。

@@ -515,6 +515,45 @@ defmodule SymphonyElixir.Shanzhi.AdapterTest do
     assert unsupported["output"] =~ "Unsupported dynamic tool"
   end
 
+  test "resolve_bug blocked by smoke gate without calling SF API" do
+    previous = System.get_env("SMOKE_RESOLVE_GATE")
+    System.put_env("SMOKE_RESOLVE_GATE", "1")
+
+    on_exit(fn ->
+      case previous do
+        nil -> System.delete_env("SMOKE_RESOLVE_GATE")
+        value -> System.put_env("SMOKE_RESOLVE_GATE", value)
+      end
+    end)
+
+    tmp =
+      System.tmp_dir!()
+      |> Path.join("agent_tool_gate_#{System.unique_integer([:positive])}")
+      |> tap(&File.mkdir_p!/1)
+
+    on_exit(fn -> File.rm_rf!(tmp) end)
+
+    settings = tracker_settings()
+
+    comment = """
+    <p>测试边界：验列表刷新。</p>
+    <p>步骤对应：步骤 1 → test_x。</p>
+    """
+
+    response =
+      AgentTool.execute(
+        "shanzhi_resolve_bug",
+        %{"bug_id" => 83_221, "comment" => comment},
+        tracker_settings: settings,
+        workspace: tmp,
+        issue: %{identifier: "SF-83221"}
+      )
+
+    assert response["success"] == false
+    assert response["output"] =~ "smoke_resolve"
+    assert [] == Enum.filter(FakeHttp.requests(), &String.ends_with?(&1[:url] || "", "/resolveBug"))
+  end
+
   test "normalize_status accepts Chinese and English statuses" do
     assert Client.normalize_status("激活") == "active"
     assert Client.normalize_status("已解决") == "resolved"
